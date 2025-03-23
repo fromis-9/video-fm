@@ -164,7 +164,7 @@ npm run dist:win
 ```
 
 ### Contributing
-Contributions are welcome! Please check out our [Contributing Guide](CONTRIBUTING.md) for more information.
+Contributions are welcome! Please check out the [Contributing Guide](https://github.com/fromis-9/video-fm/blob/main/CONTRIBUTING.md) for more information.
 
 ## License
 
