@@ -62,6 +62,8 @@ This application requires two API keys to function properly:
    - Your new API key will be displayed - copy it to use in video.fm
    - Paste your API key into the video.fm settings screen (gear icon)
 
+Helpful tutorial: https://www.youtube.com/watch?v=uz7dY8qTFJw
+
 ## System Requirements
 
 - **Operating System**: macOS 10.13+ or Windows 10+
