@@ -12,6 +12,8 @@ A desktop application that automatically creates personalized music video compil
 - **Video Editing**: Replace specific videos during the creation process
 - **Cross-platform**: Compatible with both macOS and Windows
 
+# Note - macOS and Windows have separate branches
+
 ## Installation
 
 ### macOS
@@ -27,6 +29,13 @@ A desktop application that automatically creates personalized music video compil
 2. Run the installer and follow the on-screen instructions
 3. Launch the application from the Start menu or desktop shortcut
 4. If SmartScreen shows a warning, click "More info" and "Run anyway"
+
+### Regular Python Script (Smoothest experience if you know what you are doing)
+1. Download files in the main branch
+2. Download ALL dependencies; can be found in requirements.txt
+3. Make sure to have Python installed on your system
+4. A text editor like VS Code can make running it easy
+5. If you're on Windows, change the CODEC to `libx264`. If you have an NVIDIA GPU you can try `h264_nvenc`
 
 ## Usage
 
@@ -108,7 +117,7 @@ Helpful tutorial: https://www.youtube.com/watch?v=uz7dY8qTFJw
 #### Mac
 ```bash
 # Clone repository (macOS branch)
-git clone -b macos https://github.com/yourusername/video-fm.git
+git clone -b mac https://github.com/yourusername/video-fm.git
 cd video-fm
 
 # Install dependencies
