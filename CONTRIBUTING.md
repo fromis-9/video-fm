@@ -11,7 +11,7 @@ Thank you for your interest in contributing to video.fm! Here are some guideline
 
 ## Pull Request Process
 
-1. Fork the repository and create a new branch from the appropriate platform branch (`macos` or `windows`)
+1. Fork the repository and create a new branch from the appropriate platform branch (`mac` or `windows`)
 2. Make your changes, following the code style of the project
 3. Add or update relevant documentation
 4. Test your changes thoroughly
