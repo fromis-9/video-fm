@@ -30,7 +30,7 @@ A desktop application that automatically creates personalized music video compil
 3. Launch the application from the Start menu or desktop shortcut
 4. If SmartScreen shows a warning, click "More info" and "Run anyway"
 
-### Regular Python Script (Smoothest experience if you know what you are doing)
+### Regular Python Script [main branch] (Smoothest experience if you know what you are doing)
 1. Download files in the main branch
 2. Download ALL dependencies; can be found in requirements.txt
 3. Make sure to have Python installed on your system
