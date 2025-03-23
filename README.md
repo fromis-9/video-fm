@@ -31,10 +31,10 @@ A desktop application that automatically creates personalized music video compil
 4. If SmartScreen shows a warning, click "More info" and "Run anyway"
 
 ### Regular Python Script [main branch] (Smoothest experience if you know what you are doing)
-1. Download files in the main branch
+1. Download files in the main branch and put it into a folder
 2. Download ALL dependencies; can be found in requirements.txt
 3. Make sure to have Python installed on your system
-4. A text editor like VS Code can make running it easy
+4. A text editor like VS Code can make running it easy. Open the folder within the workspace you're using. (VS Code, Terminal, Command Prompt, PowerShell, etc)
 5. If you're on Windows, change the CODEC to `libx264`. If you have an NVIDIA GPU you can try `h264_nvenc`
 
 ## Usage
