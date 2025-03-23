@@ -88,6 +88,7 @@ Helpful tutorial: https://www.youtube.com/watch?v=uz7dY8qTFJw
 
 | Issue | Solution |
 |-------|----------|
+| Failed to compile videos| Make sure the Last.fm user you're targetting has a public recent scrobble profile |
 | No videos found | Verify your Last.fm username and time period |
 | API quota exceeded | Get a new YT API key or wait next day |
 | Low quality videos | Check your internet connection or manually provide URLs |
