@@ -17,7 +17,7 @@ A desktop application that automatically creates personalized music video compil
 ## Installation
 
 ### macOS
-1. Download the latest `.dmg` file from the [Releases](https://github.com/yourusername/video-fm/releases) page or [videofm.app](https://videofm.app)
+1. Download the latest `.dmg` file from the [Releases](https://github.com/fromis-9/video-fm/releases) page or [videofm.app](https://videofm.app)
 2. Open the DMG file and drag the application to your Applications folder
 3. Right-click on the app and select "Open" to bypass macOS security warning on first launch
 4. If you see a security warning, go to System Preferences → Security & Privacy → General and click "Open Anyway"
@@ -25,7 +25,7 @@ A desktop application that automatically creates personalized music video compil
 6. If that didn't open the app, paste `open /Applications/video.fm.app`
 
 ### Windows
-1. Download the latest `.exe` installer from the [Releases](https://github.com/yourusername/video-fm/releases) page or [videofm.app](https://videofm.app)
+1. Download the latest `.exe` installer from the [Releases](https://github.com/fromis-9/video-fm/releases) page or [videofm.app](https://videofm.app)
 2. Run the installer and follow the on-screen instructions
 3. Launch the application from the Start menu or desktop shortcut
 4. If SmartScreen shows a warning, click "More info" and "Run anyway"
