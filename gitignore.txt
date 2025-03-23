@@ -1,0 +1,16 @@
+# environment variables and cache files
+.env
+__pycache__/
+
+# python compiled files
+*.pyc
+*.pyo
+*.pyd
+
+# misc
+file_list.txt
+plans.txt
+
+# video files
+*.mp4videos/*.mp4
+*.mp4
