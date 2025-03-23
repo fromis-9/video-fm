@@ -1,6 +1,6 @@
 # video.fm
 
-<img src="icon.png" alt="Video.fm logo" width="100"/>
+<img src="assets/icons/icon.png" alt="Video.fm logo" width="100"/>
 
 A desktop application that automatically creates personalized music video compilations based on your Last.fm listening history. Transform your music taste into shareable video content with just a few clicks.
 
