@@ -168,7 +168,7 @@ Contributions are welcome! Please check out the [Contributing Guide](https://git
 
 ## License
 
-[MIT License](LICENSE)
+[GPLv3 License](LICENSE)
 
 ## Roadmap
 
