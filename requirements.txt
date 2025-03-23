@@ -1,0 +1,7 @@
+requests>=2.25.1
+yt-dlp>=2023.3.4
+ffmpeg-python>=0.2.0
+python-dotenv>=0.19.0
+google-api-python-client>=2.0.0
+tqdm>=4.64.0
+ffmpeg-downloader>=0.2.0
