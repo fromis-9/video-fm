@@ -1,0 +1,5 @@
+[console_scripts]
+ffdl = ffmpeg_downloader.ffdl:run
+
+[gui_scripts]
+ffdl-gui = ffmpeg_downloader.qt.__main__:main
