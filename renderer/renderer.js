@@ -209,7 +209,7 @@ function setupEventHandlers() {
       }
 
       // Add codec to config when generating video
-      function handleFormSubmit(e) {
+      /*function handleFormSubmit(e) {
         e.preventDefault();
 
         // Get form values
@@ -217,7 +217,7 @@ function setupEventHandlers() {
           // Existing fields...
           codec: document.getElementById("codec-selection").value || "libx264",
         };
-      }
+      }*/
 
       // Check for file overwrite prompt - using a more flexible pattern
       const overwriteMatch = data.match(
@@ -824,6 +824,7 @@ async function handleFormSubmit(e) {
     lastfmApiKey: lastfmApiKeyInput.value,
     youtubeApiKey: youtubeApiKeyInput.value,
     allowManualYoutube: document.getElementById("allow-manual-youtube").checked,
+    codec: document.getElementById("codec-selection").value || "libx264"
   };
 
   debugLog("Config:", config);
