@@ -3,6 +3,7 @@
 __pycache__/
 cache/
 logs/
+venv/
 *.log
 
 # Python compiled files
