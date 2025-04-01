@@ -47,6 +47,7 @@ pnpm-lock.yaml
 .idea/
 .DS_Store
 Thumbs.db
+claude.md
 
 # PyInstaller build artifacts
 build/
