@@ -68,8 +68,8 @@
                 <div class="progress-header">
                     <div class="progress-status">Processing...</div>
                     <div class="progress-buttons">
-                        <button id="toggle-log-btn" class="btn btn-small btn-secondary">Show Log</button>
                         <button id="open-video-btn" class="btn btn-small open-video-btn hidden">Open Video</button>
+                        <button id="toggle-log-btn" class="btn btn-small btn-secondary">Show Log</button>
                         <button id="stop-process-btn" class="btn btn-small btn-danger">Stop</button>
                     </div>
                 </div>
@@ -168,7 +168,10 @@
 
         <div id="settings-modal" class="modal hidden">
             <div class="modal-content">
-                <h2>API Settings</h2>
+                <div class="settings-header-row">
+                <h2>Settings</h2>
+                <button id="clear-cache-btn" class="btn btn-danger">Clear Cache</button>
+            </div>
                 <div class="form-group">
                     <label for="settings-lastfm-api-key">Last.fm API Key</label>
                     <input type="password" id="settings-lastfm-api-key" class="form-control">
@@ -179,13 +182,8 @@
                     <input type="password" id="settings-youtube-api-key" class="form-control">
                     <button id="toggle-youtube-visibility" class="toggle-visibility" title="Show/Hide">👁️</button>
                 </div>
-                <button id="clear-cache-btn" class="btn btn-danger">Clear Cache</button>
-                <div class="modal-buttons">
-                    <button id="save-settings" class="btn">Save</button>
-                    <button id="cancel-settings" class="btn btn-secondary">Cancel</button>
-                </div>
                 <div class="form-group">
-                    <label for="codec-selection">Video Codec (Buggy, use libx264)</label>
+                    <label for="codec-selection">Video Codec (h264_videotoolbox recommended on macOS)</label>
                     <select id="codec-selection" class="form-control">
                       <option value="libx264">libx264 (Compatible with all systems)</option>
                       <option value="h264_videotoolbox">h264_videotoolbox (Mac hardware acceleration)</option>
@@ -195,6 +193,10 @@
                       <option value="copy">copy (Fastest, no re-encoding)</option>
                     </select>
                   </div>
+                <div class="modal-buttons">
+                    <button id="save-settings" class="btn">Save</button>
+                    <button id="cancel-settings" class="btn btn-secondary">Cancel</button>
+                </div>
             </div>
         </div>
     </div>

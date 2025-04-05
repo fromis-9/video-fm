@@ -157,7 +157,6 @@ label {
   font-size: 0.9rem;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.2s;
 }
 
 .btn:hover {
@@ -182,6 +181,11 @@ label {
   background: #d63e2a;
 }
 
+.settings-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
 .btn-primary {
   width: 100%;
   margin-top: 0.25rem;

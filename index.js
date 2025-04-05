@@ -744,17 +744,28 @@ function registerIpcHandlers() {
 
 // Handler to open a video file
 ipcMain.handle("open-video", async (event, filePath) => {
-  debugLog("Received open-video request for:", filePath);
   try {
-    if (fs.existsSync(filePath)) {
-      debugLog("Opening video file:", filePath);
-      shell.openPath(filePath);
-      return { success: true };
+    // If it's just a filename without a path, construct the full path
+    if (!path.isAbsolute(filePath) && !filePath.includes(path.sep)) {
+      // Try in the current directory first
+      let fullPath = path.join(__dirname, filePath);
+      
+      if (!fs.existsSync(fullPath)) {
+        // Try in user data path
+        const userDataPath = app.getPath("userData");
+        fullPath = path.join(userDataPath, "Videos", filePath);
+      }
+      
+      filePath = fullPath;
     }
-    debugLog("Video file not found:", filePath);
-    return { success: false, error: "File not found" };
+    
+    if (fs.existsSync(filePath)) {
+      await shell.openPath(filePath);
+      return { success: true };
+    } else {
+      return { success: false, error: "File not found: " + filePath };
+    }
   } catch (error) {
-    debugLog("Error opening video:", error);
     return { success: false, error: error.message };
   }
 });

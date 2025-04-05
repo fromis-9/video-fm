@@ -6,6 +6,20 @@ function debugLog(...args) {
 
 debugLog("Renderer script starting...");
 
+function buildVideoPath() {
+  const username = document.getElementById("lastfm-username").value;
+  const year = document.getElementById("target-year").value;
+  const month = document.getElementById("target-month").value;
+  const numSongs = document.getElementById("num-songs").value;
+
+  const filename = `${username}_top${numSongs}_${year}_${month}.mp4`;
+  const filePath = window.path
+    ? window.path.join(__dirname, "..", filename)
+    : `${__dirname}/../${filename}`;
+
+  return filePath;
+}
+
 // Global variable to store video path when available
 let currentVideoPath = null;
 
@@ -319,30 +333,39 @@ function setupEventHandlers() {
         );
         if (filenameMatch && filenameMatch[1]) {
           const filename = filenameMatch[1];
-          // Use path.join if available, otherwise use string concatenation
-          const filePath = window.path
-            ? window.path.join(__dirname, "..", filename)
-            : `${__dirname}/../${filename}`; // Fallback
 
-          debugLog("Video completed, path:", filePath);
+          // Log the extracted filename
+          debugLog("Video completed, extracted filename:", filename);
 
-          // Store the path globally
-          currentVideoPath = filePath;
+          // Store just the filename, not the full path
+          currentVideoPath = filename;
+          window.lastCreatedVideoPath = filename;
 
-          // Set path on both buttons
+          // Store in localStorage
+          localStorage.setItem("current-video-path", filename);
+          debugLog("Saved video filename to localStorage:", filename);
+
+          // Log to the UI
+          appendToLog(`Video saved as: ${filename}`, "success");
+
+          // Set the filename on both buttons
           if (openVideoBtn) {
-            openVideoBtn.setAttribute("data-path", filePath);
+            openVideoBtn.setAttribute("data-path", filename);
             openVideoBtn.classList.remove("hidden");
+            debugLog("Set filename on open button");
           }
 
           // Also set on preview button if it exists
           if (previewVideoBtn) {
-            previewVideoBtn.setAttribute("data-path", filePath);
+            previewVideoBtn.setAttribute("data-path", filename);
+            debugLog("Set filename on preview button");
           }
 
           // Set progress to 100%
           progressBar.style.width = "100%";
           progressStatus.textContent = "Complete!";
+        } else {
+          debugLog("Could not extract filename from output:", data);
         }
       }
 
@@ -381,45 +404,95 @@ function setupEventHandlers() {
       youtubeUrlInput.value = "";
     });
 
-    // In your window.api.onAskReplaceVideos handler:
-    // Replace your existing onAskReplaceVideos event handler with this:
+    // window.api.onAskReplaceVideos handler:
     window.api.onAskReplaceVideos(() => {
       debugLog("Replace videos question received");
-      replaceVideosPrompt.classList.remove("hidden"); /*
-
-      // Find the preview button
-      const previewBtn = document.getElementById("preview-video");
-
-      if (previewBtn) {
-        // Clear existing event listeners by cloning the button
-        const newPreviewBtn = previewBtn.cloneNode(true);
-        previewBtn.parentNode.replaceChild(newPreviewBtn, previewBtn);
-
-        // Add the event listener to the new button
-        document
-          .getElementById("preview-video")
-          .addEventListener("click", () => {
-            debugLog("Preview video button clicked");
-
-            // Just use the same handler as the open button - directly call the API
-            if (currentVideoPath) {
-              window.api.openVideo(currentVideoPath);
-            } else {
-              // If we don't have a path, try to get it from the open button
-              const openBtn = document.getElementById("open-video-btn");
-              const path = openBtn ? openBtn.getAttribute("data-path") : null;
-
-              if (path) {
-                window.api.openVideo(path);
-              } else {
-                appendToLog(
-                  "Cannot preview video: Video not yet created",
-                  "error"
-                );
-              }
+      
+      // Make sure all the modal buttons are visible
+      const modalContent = document.querySelector("#replace-videos-prompt .modal-content");
+      if (modalContent) {
+        // Find the preview button
+        const previewBtn = document.getElementById("preview-video");
+        
+        if (previewBtn) {
+          // Make sure it's visible
+          previewBtn.style.display = "inline-block";
+          previewBtn.classList.remove("hidden");
+          
+          // Use the working approach for the click handler
+          previewBtn.onclick = function() {
+            try {
+              const username = document.getElementById("lastfm-username").value;
+              const year = document.getElementById("target-year").value;
+              const month = document.getElementById("target-month").value;
+              const numSongs = document.getElementById("num-songs").value;
+              
+              // Use the filename
+              const filename = `${username}_top${numSongs}_${year}_${month}.mp4`;
+              
+              debugLog("Attempting to open video:", filename);
+              
+              window.api.openVideo(filename)
+                .then(() => {
+                  debugLog("Video opened successfully");
+                })
+                .catch(err => {
+                  debugLog("Error opening video:", err);
+                  appendToLog("Error previewing video: " + err.message, "error");
+                });
+            } catch (err) {
+              debugLog("Exception in preview handler:", err);
+              appendToLog("Cannot preview video: " + err.message, "error");
             }
-          });
-      }*/
+          };
+        } else {
+          debugLog("Preview button not found - creating it");
+          
+          // Check if buttons container exists
+          const buttonsContainer = modalContent.querySelector(".modal-buttons");
+          if (buttonsContainer) {
+            // Create a new preview button
+            const newBtn = document.createElement("button");
+            newBtn.id = "preview-video";
+            newBtn.className = "btn open-video-btn";
+            newBtn.textContent = "Preview Video";
+            
+            // Add click handler
+            newBtn.onclick = function() {
+              // Same code as above
+              try {
+                const username = document.getElementById("lastfm-username").value;
+                const year = document.getElementById("target-year").value;
+                const month = document.getElementById("target-month").value;
+                const numSongs = document.getElementById("num-songs").value;
+                
+                // Use the filename
+                const filename = `${username}_top${numSongs}_${year}_${month}.mp4`;
+                
+                debugLog("Attempting to open video:", filename);
+                
+                window.api.openVideo(filename)
+                  .then(() => {
+                    debugLog("Video opened successfully");
+                  })
+                  .catch(err => {
+                    debugLog("Error opening video:", err);
+                    appendToLog("Error previewing video: " + err.message, "error");
+                  });
+              } catch (err) {
+                debugLog("Exception in preview handler:", err);
+                appendToLog("Cannot preview video: " + err.message, "error");
+              }
+            };
+            
+            // Add it to the container
+            buttonsContainer.appendChild(newBtn);
+          }
+        }
+      }
+      
+      // Show the dialog
+      replaceVideosPrompt.classList.remove("hidden");
     });
 
     // Form submission
@@ -496,24 +569,49 @@ function setupEventHandlers() {
     // Open video button
     if (openVideoBtn) {
       openVideoBtn.addEventListener("click", () => {
-        console.log("WORKING BUTTON - currentVideoPath:", currentVideoPath);
-        console.log(
-          "WORKING BUTTON - button path:",
-          openVideoBtn.getAttribute("data-path")
-        );
         debugLog("Open video button clicked");
-        openCurrentVideo();
+        
+        try {
+          const username = document.getElementById("lastfm-username").value;
+          const year = document.getElementById("target-year").value;
+          const month = document.getElementById("target-month").value;
+          const numSongs = document.getElementById("num-songs").value;
+          
+          // Just use the filename for now
+          const filename = `${username}_top${numSongs}_${year}_${month}.mp4`;
+          
+          debugLog("Attempting to open video:", filename);
+          
+          // Let the main process handle finding the full path
+          window.api.openVideo(filename)
+            .then(() => {
+              debugLog("Video opened successfully");
+            })
+            .catch(err => {
+              debugLog("Error opening video:", err);
+              appendToLog("Error opening video: " + err.message, "error");
+            });
+        } catch (err) {
+          debugLog("Exception in open video handler:", err);
+          appendToLog("Cannot open video: " + err.message, "error");
+        }
       });
     }
 
     // Preview video button
     if (previewVideoBtn) {
       previewVideoBtn.addEventListener("click", () => {
-        debugLog(
-          "Preview video button clicked, path:",
-          previewVideoBtn.getAttribute("data-path")
-        );
-        openCurrentVideo(true);
+        // Just use the same approach as the open video button
+        if (openVideoBtn) {
+          const path = openVideoBtn.getAttribute("data-path");
+          if (path) {
+            window.api.openVideo(path);
+          } else {
+            appendToLog("Cannot preview video: Video not yet created", "error");
+          }
+        } else {
+          appendToLog("Cannot preview video: Open button not found", "error");
+        }
       });
     }
 
@@ -730,9 +828,11 @@ function setupEventHandlers() {
 
 // Helper function to open current video (used by both open and preview buttons)
 function openCurrentVideo(isPreview = false) {
+  debugLog(`Opening video with isPreview=${isPreview}`);
+
   // Try using the global path first
   if (currentVideoPath) {
-    debugLog("Opening video from global path:", currentVideoPath);
+    debugLog("Using global path:", currentVideoPath);
     window.api
       .openVideo(currentVideoPath)
       .then(() => {
@@ -748,38 +848,46 @@ function openCurrentVideo(isPreview = false) {
   } else {
     // Fallback to attribute on button
     const btn = isPreview ? previewVideoBtn : openVideoBtn;
-    const videoPath = btn ? btn.getAttribute("data-path") : null;
+    debugLog(`Using button path from ${isPreview ? "preview" : "open"} button`);
+    debugLog("Button exists:", !!btn);
 
-    if (videoPath) {
-      debugLog(
-        `Opening video from ${
+    if (btn) {
+      const videoPath = btn.getAttribute("data-path");
+      debugLog("Retrieved path from button:", videoPath);
+
+      if (videoPath) {
+        debugLog("Opening video with path:", videoPath);
+        window.api
+          .openVideo(videoPath)
+          .then(() => {
+            // Save to global path if it works
+            currentVideoPath = videoPath;
+            debugLog("Video opened and path saved");
+          })
+          .catch((err) => {
+            console.error(
+              `Error opening video from ${
+                isPreview ? "preview" : "open"
+              } button attribute:`,
+              err
+            );
+            const msg = `Error ${isPreview ? "previewing" : "opening"} video: ${
+              err.message
+            }`;
+            appendToLog(msg, "error");
+          });
+      } else {
+        debugLog(`No path found on ${isPreview ? "preview" : "open"} button`);
+        const msg = `Cannot ${
           isPreview ? "preview" : "open"
-        } button attribute:`,
-        videoPath
-      );
-      window.api
-        .openVideo(videoPath)
-        .then(() => {
-          // Save to global path if it works
-          currentVideoPath = videoPath;
-          debugLog("Video opened and path saved");
-        })
-        .catch((err) => {
-          console.error(
-            `Error opening video from ${
-              isPreview ? "preview" : "open"
-            } button attribute:`,
-            err
-          );
-          const msg = `Error ${isPreview ? "previewing" : "opening"} video: ${
-            err.message
-          }`;
-          appendToLog(msg, "error");
-        });
+        } video: Video not yet created`;
+        appendToLog(msg, "error");
+      }
     } else {
+      debugLog(`${isPreview ? "Preview" : "Open"} button not found`);
       const msg = `Cannot ${
         isPreview ? "preview" : "open"
-      } video: Video not yet created`;
+      } video: Button not found`;
       appendToLog(msg, "error");
     }
   }
@@ -810,10 +918,11 @@ async function handleFormSubmit(e) {
     existingFileInfo.remove();
   }
 
+  /*
   // Hide open video button
   if (openVideoBtn) {
     openVideoBtn.classList.add("hidden");
-  }
+  } */
 
   // Get form values
   const config = {
@@ -824,7 +933,7 @@ async function handleFormSubmit(e) {
     lastfmApiKey: lastfmApiKeyInput.value,
     youtubeApiKey: youtubeApiKeyInput.value,
     allowManualYoutube: document.getElementById("allow-manual-youtube").checked,
-    codec: document.getElementById("codec-selection").value || "libx264"
+    codec: document.getElementById("codec-selection").value || "libx264",
   };
 
   debugLog("Config:", config);
@@ -843,6 +952,8 @@ async function handleFormSubmit(e) {
       progressStatus.innerHTML = '<span class="success">✓ Complete!</span>';
       appendToLog(`✅ ${result.message}`, "success");
 
+      openVideoBtn.classList.remove("hidden");
+
       // If we have a file path, add button to open it
       if (result.filePath) {
         debugLog("File path received:", result.filePath);
@@ -853,12 +964,12 @@ async function handleFormSubmit(e) {
         // Enable open video button
         if (openVideoBtn) {
           openVideoBtn.setAttribute("data-path", result.filePath);
-          openVideoBtn.classList.remove("hidden");
         }
 
         // Also set on preview button if it exists
         if (previewVideoBtn) {
           previewVideoBtn.setAttribute("data-path", result.filePath);
+          previewVideoBtn.classList.remove("hidden");
         }
 
         // Add video action buttons with open video first, then show in folder
@@ -972,6 +1083,11 @@ function resetUI() {
   if (openVideoBtn) {
     openVideoBtn.classList.add("hidden");
     openVideoBtn.removeAttribute("data-path");
+  }
+
+  if (previewVideoBtn) {
+    previewVideoBtn.classList.add("hidden");
+    previewVideoBtn.removeAttribute("data-path");
   }
 
   // Reset global video path

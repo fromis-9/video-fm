@@ -100,11 +100,11 @@ Helpful tutorial: https://www.youtube.com/watch?v=uz7dY8qTFJw
 | Temporary files not cleaning up | Restart the application or manually delete files in AppData/Local/video.fm |
 | Video generation stuck | Cancel the process, clear cache, and try again with fewer songs |
 | Cannot preview video | Bugged, just view it by clicking the file button |
-| Slow video processing | Hardware acceleration is currently bugged |
+| Slow video processing | Try h264_videotoolbox if you are on macOS |
 | Installation issues on Windows | Make sure you have administrator privileges when installing |
 | Path too long error (Windows) | Install the app in a directory with a shorter path |
 | Videos not found for songs | Try the manual URL input option for rare or regional music |
-| Can't pause video creation | Currently not supported - you'll need to stop and restart |
+| Can't pause video generation | Currently not supported - you'll need to stop and restart |
 
 ## Privacy
 
@@ -139,6 +139,8 @@ pyinstaller videofm.spec
 
 # Build for production
 npm run dist:mac
+
+# Be sure to be in a venv
 ```
 #### Windows
 ```bash
