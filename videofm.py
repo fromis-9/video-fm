@@ -7,16 +7,43 @@ import os
 import sys
 import codecs
 import subprocess
+import html
 
 # Debugging function for encoding issues
 def safe_decode(data):
-    """Safely decode bytes to string, handling different types."""
+    """Safely decode data to a string, handling different input types and encoding issues.
+    
+    Args:
+        data: Input data to decode
+    
+    Returns:
+        str: Decoded string, or fallback representation
+    """
     if data is None:
-        return None
-    if isinstance(data, bytes):
-        return data.decode('utf-8', errors='replace')
+        return ""
+    
+    # If already a string, return as-is
     if isinstance(data, str):
         return data
+    
+    # If bytes, try decoding with UTF-8, with fallback strategies
+    if isinstance(data, bytes):
+        try:
+            # First try UTF-8 strict decoding
+            return data.decode('utf-8', errors='strict')
+        except UnicodeDecodeError:
+            try:
+                # If strict fails, try with replacement strategy
+                return data.decode('utf-8', errors='replace')
+            except Exception:
+                try:
+                    # Last resort: decode with ignore strategy
+                    return data.decode('utf-8', errors='ignore')
+                except Exception:
+                    # Absolute last resort: convert to string representation
+                    return str(data)
+    
+    # For any other type, convert to string
     return str(data)
 
 # Fix for multiprocessing with PyInstaller
@@ -478,6 +505,9 @@ def search_youtube_video(artist, title):
         str: YouTube URL if found, None if not found
     """
     global youtube
+
+    artist = safe_decode(artist)
+    title = safe_decode(title)
     artist, title = str(artist), str(title)
     
     # Use a less aggressive cleaning function for non-Latin scripts
@@ -1074,87 +1104,84 @@ def prepare_black_screen():
     return BLACK_SCREEN_FINAL
     
 def add_text_overlay(input_clip, output_clip, text):
-    """Add text overlay to video clip with consistent sizing and positioning.
-    
-    Args:
-        input_clip: Path to input video
-        output_clip: Path to save output video
-        text: Text to overlay
-    """
-    # Get video dimensions using ffprobe
+    """Add text overlay to video clip with consistent sizing and positioning."""
+    # Convert inputs to string and sanitize
+    if isinstance(input_clip, bytes):
+        input_clip = input_clip.decode('utf-8', errors='replace')
+    else:
+        input_clip = str(input_clip)
+        
+    if isinstance(output_clip, bytes):
+        output_clip = output_clip.decode('utf-8', errors='replace')
+    else:
+        output_clip = str(output_clip)
+        
+    if isinstance(text, bytes):
+        text = text.decode('utf-8', errors='replace')
+    else:
+        text = str(text)
+
+    text = html.unescape(text)  # Convert HTML entities like &#39; back to apostrophes, etc.
+
+    # Get video dimensions
     try:
         probe = ffmpeg.probe(input_clip)
         width = int(probe['streams'][0]['width'])
         height = int(probe['streams'][0]['height'])
-        
-        # Base font size as percentage of video height
-        base_fontsize = int(height * 0.05)  # 5% of video height
-        
-        # Adjust font size based on text length to ensure it fits
-        # Calculate approximate character width (varies by font)
-        char_width_factor = 0.6  # Approximate width of a character relative to font size
-        
-        # Estimate width of text in pixels
+        base_fontsize = int(height * 0.05)
+        char_width_factor = 0.6
         estimated_text_width = len(text) * base_fontsize * char_width_factor
-        
-        # If estimated width is too large, scale down the font size
-        if estimated_text_width > width * 0.85:  # Allow text to use 85% of width
-            fontsize = int(base_fontsize * (width * 0.85) / estimated_text_width)
-        else:
-            fontsize = base_fontsize
-        
-        # Scale shadow size based on resolution
+        fontsize = int(base_fontsize * (width * 0.85) / estimated_text_width) if estimated_text_width > width * 0.85 else base_fontsize
         shadowx = max(2, int(width * 0.002))
         shadowy = max(2, int(height * 0.002))
-        
-        # Calculate position from bottom as percentage of height
-        bottom_margin = int(height * 0.08)  # 8% from bottom
-        y_position = f"h-{bottom_margin}"
+        y_position = f"h-{int(height * 0.08)}"
     except Exception as e:
         print(f"⚠️ Could not determine video dimensions: {e}")
-        # Fallback values
         fontsize = 36
         shadowx = 2
         shadowy = 2
         y_position = "h-100"
-    
-    # Determine font path for different operating systems
-    font_path = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"  # Mac path
+
+    # Font paths
+    font_path = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
     if not os.path.exists(font_path):
-        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"  # Linux fallback
+        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
         if not os.path.exists(font_path):
-            font_path = "C:\\Windows\\Fonts\\arialuni.ttf"  # Windows Unicode font
+            font_path = "C:\\Windows\\Fonts\\arialuni.ttf"
             if not os.path.exists(font_path):
-                font_path = "C:\\Windows\\Fonts\\arial.ttf"  # Windows regular Arial
+                font_path = "C:\\Windows\\Fonts\\arial.ttf"
                 if not os.path.exists(font_path):
-                    font_path = None  # Let ffmpeg use default font
-    
-    # Text with enhanced shadow for better readability
+                    font_path = None
+
     text_params = {
         'text': text,
         'fontsize': fontsize,
         'fontcolor': 'white',
-        'x': '(w-text_w)/2',  # Center horizontally
-        'y': y_position,      # Consistent distance from bottom
+        'x': '(w-text_w)/2',
+        'y': y_position,
         'shadowcolor': 'black',
         'shadowx': shadowx,
         'shadowy': shadowy
     }
-    
+
     if font_path:
         text_params['fontfile'] = font_path
-    
-    # Apply text filter with shadow
-    ffmpeg.input(input_clip).filter(
-        'drawtext', **text_params
-    ).output(
-        output_clip, 
-        vcodec=SELECTED_CODEC, 
-        acodec="aac", 
-        audio_bitrate="192k", 
-        map="0:a", 
-        preset="slow"
-    ).run()
+
+    try:
+        ffmpeg.input(input_clip).filter('drawtext', **text_params).output(
+            output_clip, 
+            vcodec=SELECTED_CODEC, 
+            acodec="aac", 
+            audio_bitrate="192k", 
+            map="0:a", 
+            preset="slow"
+        ).run()
+    except Exception as e:
+        print(f"❌ Error adding text overlay: {e}")
+        import shutil
+        shutil.copy(input_clip, output_clip)
+        print("⚠️ Using clip without text overlay as fallback")
+
 
 def update_video():
     """Allow user to replace incorrect videos before final merge."""
@@ -1214,7 +1241,7 @@ def update_video():
                 download_video(new_video_url, clip_path, start_time=start_time_seconds, duration=CLIP_DURATION)
                 
                 # Add text overlay
-                add_text_overlay(clip_path, final_clip_path, f"{len(songs)-index}. {artist} - {title}")
+                add_text_overlay(clip_path, final_clip_path, f"{len(songs)-i}. {safe_decode(artist)} - {safe_decode(title)}")
 
                 # Update cached YouTube links
                 query = f"{artist} - {title}"
@@ -1295,6 +1322,8 @@ if __name__ == "__main__":
     
     for i, song_data in enumerate(reversed(songs)):
         artist, title = song_data
+        artist = safe_decode(artist)
+        title = safe_decode(title)
         print(f"\n🎵 Processing {i+1}/{NUM_SONGS}: {artist} - {title}")
         query = f"{artist} {title}"
         video_url = search_youtube_video(artist, title)
@@ -1323,7 +1352,7 @@ if __name__ == "__main__":
             download_video(video_url, clip_path, start_time=start_time_seconds, duration=CLIP_DURATION)
             
             # Add text overlay
-            add_text_overlay(clip_path, final_clip_path, f"{len(songs)-i}. {artist} - {title}")
+            add_text_overlay(clip_path, final_clip_path, f"{len(songs)-i}. {safe_decode(artist)} - {safe_decode(title)}")
             video_clips.append(final_clip_path)
             
         except Exception as e:
@@ -1389,6 +1418,6 @@ if __name__ == "__main__":
                 shutil.rmtree(VIDEO_OUTPUT_DIR)
                 print("✅ Temporary video folder cleaned up. May have been moved to Recycle Bin/Trash.")
             except Exception as e:
-                print(f"⚠️ Could not remove video folder: {e}. Manually it youxrself")
+                print(f"⚠️ Could not remove video folder: {e}. Manually delete it yourself")
         else:
             print("⚠️ Final video not found or empty. Keeping temporary files for troubleshooting.")

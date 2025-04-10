@@ -503,7 +503,7 @@ function registerIpcHandlers() {
         const output = data.toString();
         debugLog(
           "Process output:",
-          output.substring(0, 100) + (output.length > 100 ? "..." : "")
+          output.substring(0, 1000) + (output.length > 1000 ? "..." : "")
         );
 
         // Send output to renderer
