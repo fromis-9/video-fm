@@ -13,6 +13,7 @@ A desktop application that automatically creates personalized music video compil
 - **Cross-platform**: Compatible with both macOS and Windows
 
 # Note - only macOS is currently supported
+Windows support may come later
 
 ## Installation
 
