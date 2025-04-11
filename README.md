@@ -1,3 +1,5 @@
+![GitHub all releases](https://img.shields.io/github/downloads/fromis-9/video-fm/total?label=Downloads)
+
 # video.fm
 
 <img src="assets/icons/icon.png" alt="Video.fm logo" width="100"/>
