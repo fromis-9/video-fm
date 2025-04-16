@@ -4,7 +4,7 @@
 
 <img src="assets/icons/icon.png" alt="Video.fm logo" width="100"/>
 
-A desktop application that automatically creates personalized music video compilations based on your Last.fm listening history. Transform your music taste into shareable video content with just a few clicks.
+A macOS application that automatically creates personalized music video compilations based on your Last.fm listening history. Transform your music taste into shareable video content with just a few clicks.
 
 ## Features
 
@@ -12,7 +12,6 @@ A desktop application that automatically creates personalized music video compil
 - **Custom Compilations**: Create video compilations of your top songs for any given date period
 - **Smart Video Selection**: Automatically searches for related music videos
 - **Video Editing**: Replace specific videos during the creation process
-- **Cross-platform**: Compatible with both macOS and Windows
 
 # Note - only macOS is currently supported
 Windows support may come later
