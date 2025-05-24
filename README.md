@@ -1,8 +1,10 @@
+![GitHub all releases](https://img.shields.io/github/downloads/fromis-9/video-fm/total?label=Downloads)
+
 # video.fm
 
 <img src="assets/icons/icon.png" alt="Video.fm logo" width="100"/>
 
-A desktop application that automatically creates personalized music video compilations based on your Last.fm listening history. Transform your music taste into shareable video content with just a few clicks.
+A macOS application that automatically creates personalized music video compilations based on your Last.fm listening history. Transform your music taste into shareable video content with just a few clicks.
 
 ## Features
 
@@ -10,9 +12,9 @@ A desktop application that automatically creates personalized music video compil
 - **Custom Compilations**: Create video compilations of your top songs for any given date period
 - **Smart Video Selection**: Automatically searches for related music videos
 - **Video Editing**: Replace specific videos during the creation process
-- **Cross-platform**: Compatible with both macOS and Windows
 
-# Note - macOS and Windows have separate branches
+# Note - only macOS is currently supported
+Windows support may come later
 
 ## Installation
 
@@ -24,19 +26,6 @@ A desktop application that automatically creates personalized music video compil
 5. If none of the above worked, open Terminal and paste `xattr -cr /Applications/video.fm.app`
 6. If that didn't open the app, paste `open /Applications/video.fm.app`
 
-### Windows
-1. Download the latest `.exe` installer from the [Releases](https://github.com/fromis-9/video-fm/releases) page or [videofm.app](https://videofm.app)
-2. Run the installer and follow the on-screen instructions
-3. Launch the application from the Start menu or desktop shortcut
-4. If SmartScreen shows a warning, click "More info" and "Run anyway"
-
-### Regular Python Script [main branch] (Smoothest experience if you know what you are doing)
-1. Download files in the main branch and put it into a folder
-2. Download ALL dependencies; can be found in requirements.txt
-3. Make sure to have Python installed on your system
-4. A text editor like VS Code can make running it easy. Open the folder within the workspace you're using. (VS Code, Terminal, Command Prompt, PowerShell, etc)
-5. If you're on Windows, change the CODEC to `libx264`. If you have an NVIDIA GPU you can try `h264_nvenc`
-
 ## Usage
 
 ### Getting Started
@@ -47,8 +36,6 @@ A desktop application that automatically creates personalized music video compil
 5. Choose how many songs to include (1-50)
 6. Check "Allow manual YouTube URL entry" if you want to provide specific video URLs from failed searches
 7. Click "Generate" to start the compilation process
-
-### Hardware acceleration coming later
 
 ## API Keys
 
@@ -76,7 +63,7 @@ Helpful tutorial: https://www.youtube.com/watch?v=uz7dY8qTFJw
 
 ## System Requirements
 
-- **Operating System**: macOS 10.13+ or Windows 10+
+- **Operating System**: macOS 10.13+ (Sillicon recommended)
 - **Memory**: 4GB RAM minimum, 8GB recommended
 - **Disk Space**: 2GB+ free space (varies based on compilation length)
 - **Internet**: Good internet connection
@@ -191,4 +178,4 @@ Contributions are welcome! Please check out the [Contributing Guide](https://git
 
 ## Contact
 
-- Discord: @fromis_09
+- Discord: @corinthians00
