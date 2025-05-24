@@ -72,6 +72,7 @@ parser = argparse.ArgumentParser(description='video.fm - Create music video comp
 parser.add_argument('--env-path', help='Path to .env file')
 parser.add_argument('--output-dir', help='Directory to save output videos')
 parser.add_argument('--codec', default='libx264', help='Video codec to use')
+parser.add_argument('--max-quality', default='1080', help='Maximum video quality (480, 720, 1080, 1440, 2160)')
 parser.add_argument('--lastfm-api-key', help='Last.fm API key')
 parser.add_argument('--youtube-api-key', help='YouTube API key')
 args = parser.parse_args()
@@ -82,6 +83,7 @@ else:
     load_dotenv()  # Fallback to default behavior
 
 SELECTED_CODEC = args.codec if args and hasattr(args, 'codec') and args.codec else "libx264"
+MAX_VIDEO_QUALITY = args.max_quality if args and hasattr(args, 'max_quality') and args.max_quality else "1080"
     
 # ==== Configuration ====
 LASTFM_API_KEY = args.lastfm_api_key or os.getenv("LASTFM_API_KEY")
@@ -320,8 +322,9 @@ while True:
     else:
         print("❌ Invalid input. Please enter a valid number.")
 
-# Display the selected codec to the user
+# Display the selected codec and quality to the user
 print(f"\n🎬 Using video codec: {SELECTED_CODEC}")
+print(f"📺 Maximum video quality: {MAX_VIDEO_QUALITY}p")
 
 # Ask if user wants to manually input YouTube URLs for missing videos
 manual_youtube_input = input(
@@ -823,8 +826,25 @@ def download_video(video_url, output_path, start_time=None, duration=None):
             progress_bar.n = 100
             progress_bar.close()
     
+    # Create format string based on quality limit
+    def get_format_selector():
+        """Generate yt-dlp format selector based on maximum quality setting."""
+        quality_height = int(MAX_VIDEO_QUALITY)
+        
+        # Format strings for different quality limits
+        if quality_height <= 480:
+            return f'bestvideo[height<={quality_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={quality_height}][ext=mp4]/best[ext=mp4]/best'
+        elif quality_height <= 720:
+            return f'bestvideo[height<={quality_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={quality_height}][ext=mp4]/best[ext=mp4]/best'
+        elif quality_height <= 1080:
+            return f'bestvideo[height<={quality_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={quality_height}][ext=mp4]/best[ext=mp4]/best'
+        elif quality_height <= 1440:
+            return f'bestvideo[height<={quality_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={quality_height}][ext=mp4]/best[ext=mp4]/best'
+        else:  # 4K and above
+            return 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+    
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': get_format_selector(),
         'outtmpl': tmp_path,
         'progress_hooks': [progress_hook],
         'quiet': False,
@@ -1183,16 +1203,17 @@ def update_video():
             print(f"  {i+1}. {artist} - {title}")
         
         try:
-            index = int(input("\nEnter the song number to replace (1-50): ")) - 1
-            if index < 0 or index >= len(video_clips):
+            user_input = int(input("\nEnter the song number to replace (1-50): "))
+            if user_input < 1 or user_input > len(video_clips):
                 print("❌ Invalid song number. Try again.")
                 continue
 
-            artist, title = songs[index]
-            print(f"🔄 Replacing: {artist} - {title}") 
-
-            # Rest of your replacement code...
-
+            # Fix: Map user input to correct video_clips index
+            # User sees songs in order 1,2,3... but video_clips is in reverse order
+            # User input 1 corresponds to video_clips[len(songs)-1]
+            index = len(songs) - user_input
+            
+            artist, title = songs[user_input - 1]  # Get song info from original position
             print(f"🔄 Replacing: {artist} - {title}")
 
             # Ask for a new YouTube URL
@@ -1227,8 +1248,8 @@ def update_video():
                 # Download and extract clip
                 download_video(new_video_url, clip_path, start_time=start_time_seconds, duration=CLIP_DURATION)
                 
-                # Add text overlay
-                add_text_overlay(clip_path, final_clip_path, f"{len(songs)-index}. {artist} - {title}")
+                # Fix: Use correct track number that matches original numbering
+                add_text_overlay(clip_path, final_clip_path, f"{user_input}. {artist} - {title}")
 
                 # Update cached YouTube links
                 query = f"{artist} - {title}"

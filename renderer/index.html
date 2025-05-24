@@ -20,7 +20,7 @@
             <form id="config-form">
                 <div class="form-group">
                     <label for="lastfm-username">Last.fm Username</label>
-                    <input type="text" id="lastfm-username" class="form-control" required>
+                    <input type="text" id="lastfm-username" class="form-control" placeholder="enter username" required>
                 </div>
 
                 <div class="form-row">
@@ -191,6 +191,16 @@
                       <option value="h264_amf">h264_amf (AMD GPU acceleration)</option>
                       <option value="h264_qsv">h264_qsv (Intel QuickSync acceleration)</option>
                       <option value="copy">copy (Fastest, no re-encoding)</option>
+                    </select>
+                  </div>
+                <div class="form-group">
+                    <label for="max-quality-selection">Maximum Video Quality</label>
+                    <select id="max-quality-selection" class="form-control">
+                      <option value="480">480p (Small file size)</option>
+                      <option value="720">720p (Balanced)</option>
+                      <option value="1080" selected>1080p (High quality)</option>
+                      <option value="1440">1440p (Very high quality)</option>
+                      <option value="2160">4K (Maximum quality)</option>
                     </select>
                   </div>
                 <div class="modal-buttons">

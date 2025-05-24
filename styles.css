@@ -134,6 +134,16 @@ label {
   border-color: var(--primary-color);
 }
 
+/* Placeholder text styling */
+.form-control::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+  opacity: 1; /* Firefox fix */
+}
+
+.form-control:focus::placeholder {
+  color: rgba(255, 255, 255, 0.2);
+}
+
 .checkbox-group {
   display: flex;
   align-items: center;
@@ -181,11 +191,6 @@ label {
   background: #d63e2a;
 }
 
-.settings-header-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
 .btn-primary {
   width: 100%;
   margin-top: 0.25rem;
@@ -283,7 +288,7 @@ label {
 }
 
 .log::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.1);
+  background: var(--background-color);
   border-radius: 4px;
 }
 
@@ -294,6 +299,30 @@ label {
 
 .log::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.3);
+}
+
+/* Global scrollbar styling for all scrollable elements */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--background-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+::-webkit-scrollbar-corner {
+  background: var(--background-color);
 }
 
 /* Modal */
@@ -316,6 +345,8 @@ label {
   padding: 1.5rem;
   width: 90%;
   max-width: 400px;
+  max-height: 85vh;
+  overflow-y: auto;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
 }
 
@@ -396,18 +427,7 @@ label {
   font-size: 0.8rem;
 }
 
-/* Settings specific styles */
-.toggle-visibility {
-  position: absolute;
-  right: 8px;
-  top: 28px;
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1rem;
-}
-
+/* General form styles */
 .form-group:has(input[type="password"]) .form-control {
   padding-right: 30px;
 }
@@ -471,4 +491,102 @@ label {
 
 .video-actions .btn {
   flex: 1;
+}
+
+/* Settings modal specific styling */
+#settings-modal .modal-content {
+  max-width: 420px;
+  width: 90%;
+  padding: 1.25rem;
+}
+
+/* Improve form group spacing in settings */
+#settings-modal .form-group {
+  margin-bottom: 1rem;
+  position: relative;
+}
+
+#settings-modal .form-group:last-of-type {
+  margin-bottom: 1.25rem;
+}
+
+/* Better button layout for settings header */
+.settings-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.settings-header-row h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+/* Compact form styling for settings */
+#settings-modal label {
+  font-size: 0.8rem;
+  margin-bottom: 0.2rem;
+}
+
+#settings-modal .form-control {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+#settings-modal select.form-control {
+  padding: 0.35rem 0.6rem;
+}
+
+/* Improve the toggle visibility button positioning */
+#settings-modal .toggle-visibility {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.9rem;
+  z-index: 1;
+}
+
+#settings-modal .form-group:has(input[type="password"]) .form-control {
+  padding-right: 30px;
+}
+
+/* Smaller Clear Cache button */
+#settings-modal .btn-danger {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+/* Compact modal buttons */
+#settings-modal .modal-buttons {
+  gap: 0.5rem;
+}
+
+#settings-modal .modal-buttons .btn {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+}
+
+/* Modal scrollbar styling */
+.modal-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.modal-content::-webkit-scrollbar-track {
+  background: var(--panel-color);
+  border-radius: 4px;
+}
+
+.modal-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+.modal-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
 }

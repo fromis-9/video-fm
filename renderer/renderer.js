@@ -222,6 +222,18 @@ function setupEventHandlers() {
         });
       }
 
+      // Load video quality setting
+      const maxQualitySelection = document.getElementById("max-quality-selection");
+      if (maxQualitySelection) {
+        const savedQuality = localStorage.getItem("max-video-quality") || "1080";
+        maxQualitySelection.value = savedQuality;
+
+        // Save quality when changed
+        maxQualitySelection.addEventListener("change", () => {
+          localStorage.setItem("max-video-quality", maxQualitySelection.value);
+        });
+      }
+
       // Add codec to config when generating video
       /*function handleFormSubmit(e) {
         e.preventDefault();
@@ -934,6 +946,7 @@ async function handleFormSubmit(e) {
     youtubeApiKey: youtubeApiKeyInput.value,
     allowManualYoutube: document.getElementById("allow-manual-youtube").checked,
     codec: document.getElementById("codec-selection").value || "libx264",
+    maxQuality: document.getElementById("max-quality-selection").value || "1080",
   };
 
   debugLog("Config:", config);

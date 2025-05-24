@@ -434,6 +434,8 @@ function registerIpcHandlers() {
             videosPath,
             "--codec",
             config.codec || "libx264",
+            "--max-quality",
+            config.maxQuality || "1080",
           ],
           {
             env: processEnv,
@@ -455,6 +457,8 @@ function registerIpcHandlers() {
             videosPath,
             "--codec",
             config.codec || "libx264",
+            "--max-quality",
+            config.maxQuality || "1080",
           ],
           {
             env: processEnv,
