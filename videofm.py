@@ -50,6 +50,11 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from shutil import which
 
+# Import our new modular API clients
+from core.api.lastfm_client import create_lastfm_client
+from core.api.youtube_client import create_youtube_client
+from core.utils.cache import load_cache, save_cache
+
 # Determine if running as packaged app
 is_frozen = getattr(sys, 'frozen', False)
 
@@ -96,6 +101,10 @@ LASTFM_API_KEY = args.lastfm_api_key or os.getenv("LASTFM_API_KEY")
 YOUTUBE_API_KEY = args.youtube_api_key or os.getenv("YOUTUBE_API_KEY")
 CHORUS_START = "00:01:00"  # Approximate start time of the chorus
 CLIP_DURATION = 15  # Duration of each clip in seconds
+
+# Initialize API clients (will be set up after key validation)
+lastfm_client = None
+youtube_client = None
 
 # ===== USER CONFIGURATION =====
 # Codec selection - Change this value to use a different encoder
@@ -263,34 +272,22 @@ if not YOUTUBE_API_KEY:
     print("Please create a .env file with your YouTube API key or set it in your environment")
     sys.exit(1)
 
+# Initialize API clients
+try:
+    lastfm_client = create_lastfm_client(LASTFM_API_KEY)
+    youtube_client = create_youtube_client(YOUTUBE_API_KEY)
+    print("✅ API clients initialized successfully")
+except Exception as e:
+    print(f"❌ Error initializing API clients: {e}")
+    sys.exit(1)
+
 # Create necessary directories
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
 
-def get_youtube_service():
-    """Creates and returns a YouTube API service with the current API key."""
-    return build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+# YouTube service will be initialized through the modular client
 
-# Initialize YouTube service
-youtube = get_youtube_service()
-
-def load_cache(filename):
-    """Load cached data from a JSON file."""
-    path = CACHE_DIR / filename
-    try:
-        if path.exists():
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
-        pass
-    return {}
-
-def save_cache(data, filename):
-    """Save data to a JSON cache file."""
-    path = CACHE_DIR / filename
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+# Cache functions are now imported from core.utils.cache
 
 # Load cached data
 video_cache = load_cache("video_cache.json")
@@ -397,148 +394,24 @@ if TIME_PERIOD == "month":
 def get_top_songs():
     """Fetch top songs for the specified time period from Last.fm.
     
-    Uses cached data when available. Otherwise, fetches all scrobbles for the 
-    time period and calculates the top songs.
+    This is now a wrapper around the modular Last.fm client.
     
     Returns:
         list: List of tuples containing (artist, title) for the top songs
     """
-    cache = load_cache("lastfm_cache.json")
+    global lastfm_client
     
-    # Create cache key based on time period
-    if TIME_PERIOD == "month":
-        cache_key = f"{LASTFM_USER}_{TARGET_YEAR}-{int(TARGET_MONTH):02d}"
-        period_description = f"{TARGET_YEAR}-{int(TARGET_MONTH):02d}"
-    elif TIME_PERIOD == "year":
-        cache_key = f"{LASTFM_USER}_{TARGET_YEAR}"
-        period_description = f"{TARGET_YEAR}"
-    else:  # alltime
-        cache_key = f"{LASTFM_USER}_alltime"
-        period_description = "all-time"
+    if not lastfm_client:
+        print("❌ Last.fm client not initialized")
+        return []
     
-    current_time = int(time.time())
-
-    # Adaptive cache expiration based on time period
-    if TIME_PERIOD == "alltime":
-        # All-time: cache for 7 days (since all-time data changes slowly)
-        cache_duration = 7 * 24 * 3600  # 7 days
-    elif TIME_PERIOD == "year":
-        # Yearly: cache for 1 day (yearly data is relatively stable)
-        cache_duration = 24 * 3600  # 1 day
-    else:  # monthly
-        # Monthly: cache for 6 hours (monthly data can change more frequently)
-        cache_duration = 6 * 3600  # 6 hours
-
-    # Check cache first with adaptive expiration
-    if cache_key in cache and current_time - cache[cache_key].get("last_fetched", 0) < cache_duration:
-        print(f"✅ Using cached data for {cache_key}")
-        top_songs = [
-            artist_title
-            for artist_title, _ in Counter(map(tuple, cache[cache_key]["scrobbles"])).most_common(NUM_SONGS)
-        ]
-        print(f"📋 Top songs from cache: {top_songs}")
-        sys.stdout.flush()
-        return top_songs
-
-    # Determine timestamp range for the target period
-    if TIME_PERIOD == "month":
-        start_date = int(datetime.datetime(int(TARGET_YEAR), int(TARGET_MONTH), 1).timestamp())
-        
-        # Calculate end date (first day of next month)
-        if int(TARGET_MONTH) < 12:
-            end_date = int(datetime.datetime(int(TARGET_YEAR), int(TARGET_MONTH) + 1, 1).timestamp())
-        else:
-            end_date = int(datetime.datetime(int(TARGET_YEAR) + 1, 1, 1).timestamp())
-    elif TIME_PERIOD == "year":
-        # Yearly: from January 1st to December 31st
-        start_date = int(datetime.datetime(int(TARGET_YEAR), 1, 1).timestamp())
-        end_date = int(datetime.datetime(int(TARGET_YEAR) + 1, 1, 1).timestamp())
-    else:  # alltime
-        # All-time: no date filtering
-        start_date = None
-        end_date = None
-
-    all_tracks = []
-    page = 1
-    found_earliest = False  # Flag to track when we've found the earliest track for the period
-
-    # Fetch all scrobbles from Last.fm API
-    while not found_earliest:
-        print(f"📥 Fetching page {page} from Last.fm...")
-        sys.stdout.flush()  # Force output to be sent immediately
-
-        url = f"http://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&user={LASTFM_USER}&api_key={LASTFM_API_KEY}&format=json&limit=1000&page={page}"
-        
-        try:
-            response = requests.get(url)
-            response.raise_for_status()
-            data = response.json()
-
-            # Check for API errors
-            if "error" in data:
-                print(f"❌ Last.fm API error: {data['message']}")
-                sys.exit(1)
-
-            # Validate response structure
-            if 'recenttracks' not in data or 'track' not in data['recenttracks']:
-                print("❌ Error: Invalid API response. The expected data structure is missing.")
-                print("Response:", data)
-                break
-
-            tracks = data["recenttracks"]["track"]
-            if not tracks:
-                break  # No more tracks to fetch
-
-            for track in tracks:
-                # Skip currently playing track (no timestamp)
-                if "date" in track:
-                    timestamp = int(track["date"]["uts"])
-
-                    if TIME_PERIOD == "alltime":
-                        # All-time: collect all tracks
-                        artist = track["artist"]["#text"]
-                        title = track["name"]
-                        all_tracks.append((artist, title))
-                    elif start_date <= timestamp < end_date:
-                        # Track belongs to our target period
-                        artist = track["artist"]["#text"]
-                        title = track["name"]
-                        all_tracks.append((artist, title))
-                    elif timestamp < start_date:
-                        # We've reached tracks before our target period
-                        print(f"✅ Found earliest track for {period_description}, stopping fetch.")
-                        sys.stdout.flush()
-                        found_earliest = True
-                        break
-
-            # For all-time, stop when we've processed all available tracks
-            if TIME_PERIOD == "alltime" and len(tracks) < 1000:
-                print(f"✅ Reached end of {period_description} data, stopping fetch.")
-                sys.stdout.flush()
-                found_earliest = True
-                break
-
-            if found_earliest:
-                break
-
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Error fetching data: {e}")
-            break
-
-        page += 1
-        time.sleep(0.5)  # Prevent API rate-limiting
-
-    # Count occurrences of each song and get the most-played ones
-    track_counts = Counter(all_tracks).most_common(NUM_SONGS)
-
-    # Save results to cache
-    cache[cache_key] = {
-        "last_fetched": int(time.time()),
-        "scrobbles": all_tracks
-    }
-    save_cache(cache, "lastfm_cache.json") 
-
-    return [song[0] for song in track_counts]
+    return lastfm_client.get_top_songs(
+        username=LASTFM_USER,
+        time_period=TIME_PERIOD,
+        target_year=int(TARGET_YEAR),
+        target_month=int(TARGET_MONTH) if TARGET_MONTH else None,
+        num_songs=NUM_SONGS
+    )
 
 def load_progress():
     """Load progress data from cache."""
@@ -563,18 +436,17 @@ def clean_query(text):
     return re.sub(r"[^\w\s-]", "", text)  # Removes punctuation except spaces and hyphens
 
 def update_youtube_api_key():
-    """Prompt user for a new YouTube API key and update the service globally."""
-    global YOUTUBE_API_KEY, youtube
+    """Prompt user for a new YouTube API key and update the client."""
+    global YOUTUBE_API_KEY, youtube_client
     print("⚠️ API quota exceeded. Try again tomorrow, or enter a new API key:")
     YOUTUBE_API_KEY = input("Enter new API key: ").strip()
-    youtube = get_youtube_service()
+    if youtube_client:
+        youtube_client.update_api_key(YOUTUBE_API_KEY)
 
 def search_youtube_video(artist, title):
     """Search for a YouTube video matching the artist and title.
     
-    Optimized for all languages and international music while
-    being efficient with API usage. Prioritizes official music videos
-    over lyric videos and other content.
+    This is now a wrapper around the modular YouTube client.
     
     Args:
         artist: Artist name
@@ -583,224 +455,25 @@ def search_youtube_video(artist, title):
     Returns:
         str: YouTube URL if found, None if not found
     """
-    global youtube
-    artist, title = str(artist), str(title)
+    global youtube_client
     
-    # Use a less aggressive cleaning function for non-Latin scripts
-    def gentle_clean(text):
-        # Remove only problematic characters but preserve non-Latin characters
-        return re.sub(r'[#<>:"?*|/\\]', "", text)
+    if not youtube_client:
+        print("❌ YouTube client not initialized")
+        return None
     
-    # Create query with minimal cleaning to preserve non-Latin characters
-    query = f"{gentle_clean(artist)} - {gentle_clean(title)}"
-
-    # Check progress cache for previously processed queries
-    if query in progress:
-        print(f"🔁 Using cached result for: {query}")
-        return progress[query]
-
-    # Define search queries with international terms
-    # These terms are common across many languages
-    search_queries = [
-        # First try: Artist - Title (exact match)
-        f"{artist} - {title}",
-        
-        # Second try: Add universal terms for official content
-        f"{artist} - {title} official MV"
-    ]
-    
-    # Group indicators by priority tiers (1 = highest, 3 = lowest)
-    quality_indicators = {
-        # Tier 1: Official music videos (highest priority)
-        "music_video": [
-            # Universal
-            "official music video", "official video", "mv", "m/v", "vevo", "music video",
-            # Korean
-            "뮤직비디오", "official mv", "performance video", "special clip",
-            # Japanese
-            "ミュージックビデオ", "pv", "オフィシャル",
-            # Spanish
-            "video oficial",
-            # Portuguese 
-            "vídeo oficial", "clipe oficial",
-            # French
-            "clip officiel", "vidéo officielle",
-            # Chinese
-            "官方完整版", "官方版", "官方高清", "官方网易云", "MV超清", "官方MV", "完整版",
-            # Hindi/Indian
-            "official video song", "full video song",
-            # Russian/Slavic
-            "официальное видео", "официальный клип", "официальная премьера", "музыкальный клип",
-            # German
-            "offizielles video", "offizielles musikvideo", "offizieller musikfilm",
-            # Arabic
-            "فيديو كليب رسمي", "الفيديو الرسمي",
-            # Italian
-            "video ufficiale", "videoclip ufficiale",
-            # Turkish
-            "resmi video", "resmi müzik video", "official video klip",
-            # Thai
-            "เอ็มวี", "มิวสิควิดีโอ",
-            # Indonesian/Malay
-            "video klip resmi", "video rasmi", "musik video"
-        ],
-        
-        # Tier 2: Topic channels and official audio (medium priority)
-        "audio": [
-            # Official audio indicators
-            "official audio", "audio oficial", "audio ufficiale", 
-            # Generic Topic channel indicators
-            "topic", "studio", "audio", "- Topic"
-        ],
-        
-        # Tier 3: Lyric videos (lowest priority)
-        "lyrics": [
-            "lyric video", "lyrics", "with lyrics", "letra", "paroles",
-            "लिरिक्स", "lirik video", "official visualizer", "visualizer"
-        ]
-    }
-    
-    # Function to check what tier a video belongs to
-    def get_match_tier(video_title_lower, channel_title):
-        # Check for Topic channels specifically
-        if "- Topic" in channel_title:
-            return "audio", "- Topic"
-            
-        # Check each tier from highest to lowest
-        for tier, indicators in quality_indicators.items():
-            for indicator in indicators:
-                if indicator.lower() in video_title_lower:
-                    return tier, indicator
-                    
-        # No specific tier found
-        return None, None
-    
-    # Try each query
-    best_matches = {
-        "music_video": None,  # Best music video match
-        "audio": None,        # Best audio match
-        "lyrics": None,       # Best lyric video match
-        "other": None         # Fallback match
-    }
-    
-    for search_query in search_queries:
-        try:
-            print(f"🔍 Searching: {search_query}...")
-            request = youtube.search().list(
-                part="snippet",
-                q=search_query,
-                type="video",
-                maxResults=8,
-                order="relevance",
-                videoCategoryId="10"  # Music category
-            )
-            response = request.execute()
-            
-            # First pass: Categorize all videos by tier and find the best in each
-            for item in response.get("items", []):
-                video_title = item["snippet"]["title"]
-                video_title_lower = video_title.lower()
-                channel_title = item["snippet"]["channelTitle"]
-                
-                # Basic relevance check - need either title or artist in the video title
-                is_relevant = (title.lower() in video_title_lower) or (artist.lower() in video_title_lower)
-                
-                # Skip if not even relevant
-                if not is_relevant:
-                    continue
-                    
-                # Get the tier of this video
-                tier, indicator = get_match_tier(video_title_lower, channel_title)
-                
-                # If no specific tier, check other quality signals
-                is_artist_channel = artist.lower() in channel_title.lower()
-                title_exact_match = (
-                    f"{artist} - {title}".lower() in video_title_lower or 
-                    f"{title} - {artist}".lower() in video_title_lower
-                )
-                
-                # Store the video in its tier if we don't have one yet for this tier
-                if 'videoId' in item['id']:  # Add this check
-                    video_id = item['id']['videoId']
-                    video_data = {
-                        'id': video_id,
-                        'url': f"https://www.youtube.com/watch?v={video_id}",
-                        'title': video_title,
-                        'channel': channel_title,
-                        'exact_match': title_exact_match,
-                        'artist_channel': is_artist_channel,
-                        'indicator': indicator
-                    }
-                    
-                    # High-quality perfect match
-                    if title_exact_match or (is_artist_channel and title.lower() in video_title_lower):
-                        # Put in appropriate tier, or "other" if no specific tier
-                        tier_key = tier if tier else "other"
-                        if not best_matches[tier_key]:
-                            best_matches[tier_key] = video_data
-                    elif is_relevant:
-                        # Less perfect but still relevant match
-                        tier_key = tier if tier else "other"
-                        if not best_matches[tier_key]:
-                            best_matches[tier_key] = video_data
-            
-            # If we found at least one good match, stop searching
-            if any(best_matches.values()):
-                break
-                
-        except HttpError as e:
+    try:
+        return youtube_client.search_video(artist, title, allow_manual_input=ALLOW_MANUAL_YOUTUBE)
+    except HttpError as e:
+        if e.resp.status == 403:
+            print("⚠️ YouTube API quota exceeded!")
+            update_youtube_api_key()
+            # Try again with new key
+            return youtube_client.search_video(artist, title, allow_manual_input=ALLOW_MANUAL_YOUTUBE)
+        else:
             print(f"❌ YouTube API Error: {e}")
-            if e.resp.status == 403:
-                print("⚠️ YouTube API quota exceeded!")
-                # API quota exceeded, ask for a new key
-                update_youtube_api_key()
-            else:
-                print(f"⚠️ YouTube API Error (status {e.resp.status}): {e}")
-                raise
-        except Exception as e:
-            print(f"❌ Unexpected error during YouTube search: {type(e).__name__}: {e}")
-            break
+            return None
     
-    # Return the best match based on priority tier
-    for tier in ["music_video", "audio", "lyrics", "other"]:
-        if best_matches[tier]:
-            match = best_matches[tier]
-            
-            # Determine the match type description
-            if tier == "music_video":
-                match_type = "music video"
-            elif tier == "audio":
-                match_type = "audio" if match['indicator'] != "- Topic" else "topic channel"
-            elif tier == "lyrics":
-                match_type = "lyric video"
-            else:
-                match_type = "relevant video"
-                
-            print(f"✅ Found {match_type}: {match['url']}")
-            print(f"   Title: '{match['title']}'")
-            print(f"   Channel: {match['channel']}")
-            
-            # Save results in both caches
-            video_cache[query] = match['url']
-            save_cache(video_cache, "video_cache.json")
-            progress[query] = match['url']
-            save_progress(progress)
-            
-            return match['url']
-    
-    # No matches found through automatic search
-    print(f"❌ No valid video found for {artist} - {title}")
-    print(f"   Searched queries: {search_queries}")
-    sys.stdout.flush()
-    
-    # Allow user manual input if enabled
-    if ALLOW_MANUAL_YOUTUBE:
-        user_input = input(f"❌ No valid video found for {artist} - {title}. Enter a manual YouTube URL (or press Enter to skip): ").strip()
-        
-        if user_input.startswith("https://www.youtube.com/watch"):
-            return user_input
-    
-    return None
+# Function is now handled by the modular YouTube client - no implementation needed here
 
 def download_video(video_url, output_path, start_time=None, duration=None):
     """Download a video and optionally extract a precise clip.
