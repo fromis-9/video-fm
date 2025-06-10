@@ -6,13 +6,26 @@ function debugLog(...args) {
 
 debugLog("Renderer script starting...");
 
-function buildVideoPath() {
+function generateVideoFilename() {
   const username = document.getElementById("lastfm-username").value;
   const year = document.getElementById("target-year").value;
+  const timePeriod = document.getElementById("time-period").value;
   const month = document.getElementById("target-month").value;
   const numSongs = document.getElementById("num-songs").value;
 
-  const filename = `${username}_top${numSongs}_${year}_${month}.mp4`;
+  // Generate filename based on time period
+  if (timePeriod === "month") {
+    return `${username}_top${numSongs}_${year}_${month}.mp4`;
+  } else if (timePeriod === "year") {
+    return `${username}_top${numSongs}_${year}.mp4`;
+  } else {
+    // All-time
+    return `${username}_top${numSongs}_alltime.mp4`;
+  }
+}
+
+function buildVideoPath() {
+  const filename = generateVideoFilename();
   const filePath = window.path
     ? window.path.join(__dirname, "..", filename)
     : `${__dirname}/../${filename}`;
@@ -175,6 +188,58 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     debugLog("All DOM elements initialized successfully");
+
+    // Initialize toggle log button text based on initial state
+    if (toggleLogBtn && outputLog) {
+      // Log starts hidden, so button should say "Show Log"
+      toggleLogBtn.textContent = "Show Log";
+    }
+
+    // Initialize time period functionality
+    const timePeriodSelect = document.getElementById("time-period");
+    const monthGroup = document.getElementById("month-group");
+    const monthSelect = document.getElementById("target-month");
+    const yearGroup = document.querySelector('.form-group:has(#target-year)');
+    const yearInput = document.getElementById("target-year");
+    
+    if (timePeriodSelect && monthGroup && monthSelect) {
+      // Function to update month and year field visibility and validation
+      function updateMonthField() {
+        const timePeriod = timePeriodSelect.value;
+        
+        if (timePeriod === "month") {
+          // Monthly: show both year and month
+          if (yearGroup) yearGroup.style.display = "block";
+          if (yearInput) yearInput.required = true;
+          monthGroup.style.display = "block";
+          monthSelect.required = true;
+          // Set default month if none selected
+          if (!monthSelect.value) {
+            monthSelect.value = "01";
+          }
+        } else if (timePeriod === "year") {
+          // Yearly: show year, hide month
+          if (yearGroup) yearGroup.style.display = "block";
+          if (yearInput) yearInput.required = true;
+          monthGroup.style.display = "none";
+          monthSelect.required = false;
+          monthSelect.value = ""; // Clear month selection for yearly
+        } else {
+          // All-time: hide both year and month
+          if (yearGroup) yearGroup.style.display = "none";
+          if (yearInput) yearInput.required = false;
+          monthGroup.style.display = "none";
+          monthSelect.required = false;
+          monthSelect.value = ""; // Clear month selection
+        }
+      }
+      
+      // Set initial state
+      updateMonthField();
+      
+      // Listen for changes
+      timePeriodSelect.addEventListener("change", updateMonthField);
+    }
 
     // Now set up event handlers
     setupEventHandlers();
@@ -381,18 +446,98 @@ function setupEventHandlers() {
         }
       }
 
-      // Filter out download completion messages
+      // Filter out download completion messages and FFmpeg normal output
       const isDownloadCompletion =
         data.includes("[download] 100%") ||
         data.includes("Destination:") ||
         data.includes("Downloaded") ||
         data.includes("ETA");
 
-      // Only show log for actual errors, not download-related messages
+      // Filter out tqdm progress bar output (Python progress bars)
+      const isTqdmProgressBar =
+        data.includes("Downloading:") && 
+        (data.includes("%|") || data.includes("/100 [") || data.includes("%/s"));
+
+      // Filter out FFmpeg normal output that goes to stderr but isn't an error
+      const isFFmpegNormalOutput =
+        data.includes("ffmpeg version") ||
+        data.includes("built with") ||
+        data.includes("configuration:") ||
+        data.includes("libav") ||
+        data.includes("Input #") ||
+        data.includes("Output #") ||
+        data.includes("Stream mapping:") ||
+        data.includes("Stream #") ||
+        data.includes("Press [q] to stop") ||
+        data.includes("frame=") ||
+        data.includes("fps=") ||
+        data.includes("speed=") ||
+        data.includes("time=") ||
+        data.includes("bitrate=") ||
+        data.includes("Lsize=") ||
+        data.includes("video:") ||
+        data.includes("audio:") ||
+        data.includes("subtitle:") ||
+        data.includes("muxing overhead:") ||
+        data.includes("Qavg:") ||
+        data.includes("Metadata:") ||
+        data.includes("major_brand") ||
+        data.includes("encoder") ||
+        data.includes("handler_name") ||
+        data.includes("vendor_id") ||
+        data.includes("Duration:") ||
+        data.includes("codec") ||
+        data.includes("progressive") ||
+        data.includes("yuv420p") ||
+        data.includes("SAR") ||
+        data.includes("DAR") ||
+        data.includes("tbr") ||
+        data.includes("tbn") ||
+        data.includes("deprecated") ||
+        data.includes("private option") ||
+        data.includes("has not been used") ||
+        data.includes("[libx264 @") ||
+        data.includes("using cpu capabilities") ||
+        data.includes("profile High") ||
+        data.includes("264 - core") ||
+        data.includes("H.264/MPEG-4 AVC codec") ||
+        data.includes("options: cabac=") ||
+        data.includes("frame I:") ||
+        data.includes("frame P:") ||
+        data.includes("frame B:") ||
+        data.includes("consecutive B-frames:") ||
+        data.includes("mb I  I16..4:") ||
+        data.includes("mb P  I16..4:") ||
+        data.includes("mb B  I16..4:") ||
+        data.includes("8x8 transform") ||
+        data.includes("direct mvs") ||
+        data.includes("coded y,uvDC,uvAC") ||
+        data.includes("i16 v,h,dc,p:") ||
+        data.includes("i8 v,h,dc,ddl") ||
+        data.includes("i4 v,h,dc,ddl") ||
+        data.includes("i8c dc,h,v,p:") ||
+        data.includes("Weighted P-Frames:") ||
+        data.includes("ref P L0:") ||
+        data.includes("ref B L0:") ||
+        data.includes("ref B L1:") ||
+        data.includes("kb/s:") ||
+        data.includes("using SAR=") ||
+        data.includes("Side data:") ||
+        data.includes("cpb: bitrate") ||
+        data.includes("vbv_delay:") ||
+        data.includes("Auto-inserting") ||
+        data.includes("bitstream filter") ||
+        data.includes("Reconfiguring filter graph") ||
+        data.includes("dup=") ||
+        data.includes("drop=");
+
+      // Only show log for actual errors, not normal FFmpeg output, download messages, or progress bars
       if (
         (data.toLowerCase().includes("error") &&
           !data.includes("[download]") &&
-          !isDownloadCompletion) ||
+          !isDownloadCompletion &&
+          !isFFmpegNormalOutput &&
+          !isTqdmProgressBar) ||
         (data.includes("❌") &&
           !data.includes("download") &&
           !isDownloadCompletion)
@@ -403,9 +548,92 @@ function setupEventHandlers() {
 
     // Listen for Python process errors
     window.api.onPythonError((data) => {
-      // Show log on error
+      // Filter out tqdm progress bar output (Python progress bars)
+      const isTqdmProgressBar =
+        data.includes("Downloading:") && 
+        (data.includes("%|") || data.includes("/100 [") || data.includes("%/s"));
+
+      // Filter out FFmpeg normal output that goes to stderr but isn't an error
+      const isFFmpegNormalOutput =
+        data.includes("ffmpeg version") ||
+        data.includes("built with") ||
+        data.includes("configuration:") ||
+        data.includes("libav") ||
+        data.includes("Input #") ||
+        data.includes("Output #") ||
+        data.includes("Stream mapping:") ||
+        data.includes("Stream #") ||
+        data.includes("Press [q] to stop") ||
+        data.includes("frame=") ||
+        data.includes("fps=") ||
+        data.includes("speed=") ||
+        data.includes("time=") ||
+        data.includes("bitrate=") ||
+        data.includes("Lsize=") ||
+        data.includes("video:") ||
+        data.includes("audio:") ||
+        data.includes("subtitle:") ||
+        data.includes("muxing overhead:") ||
+        data.includes("Qavg:") ||
+        data.includes("Metadata:") ||
+        data.includes("major_brand") ||
+        data.includes("encoder") ||
+        data.includes("handler_name") ||
+        data.includes("vendor_id") ||
+        data.includes("Duration:") ||
+        data.includes("codec") ||
+        data.includes("progressive") ||
+        data.includes("yuv420p") ||
+        data.includes("SAR") ||
+        data.includes("DAR") ||
+        data.includes("tbr") ||
+        data.includes("tbn") ||
+        data.includes("deprecated") ||
+        data.includes("private option") ||
+        data.includes("has not been used") ||
+        data.includes("[libx264 @") ||
+        data.includes("using cpu capabilities") ||
+        data.includes("profile High") ||
+        data.includes("264 - core") ||
+        data.includes("H.264/MPEG-4 AVC codec") ||
+        data.includes("options: cabac=") ||
+        data.includes("frame I:") ||
+        data.includes("frame P:") ||
+        data.includes("frame B:") ||
+        data.includes("consecutive B-frames:") ||
+        data.includes("mb I  I16..4:") ||
+        data.includes("mb P  I16..4:") ||
+        data.includes("mb B  I16..4:") ||
+        data.includes("8x8 transform") ||
+        data.includes("direct mvs") ||
+        data.includes("coded y,uvDC,uvAC") ||
+        data.includes("i16 v,h,dc,p:") ||
+        data.includes("i8 v,h,dc,ddl") ||
+        data.includes("i4 v,h,dc,ddl") ||
+        data.includes("i8c dc,h,v,p:") ||
+        data.includes("Weighted P-Frames:") ||
+        data.includes("ref P L0:") ||
+        data.includes("ref B L0:") ||
+        data.includes("ref B L1:") ||
+        data.includes("kb/s:") ||
+        data.includes("using SAR=") ||
+        data.includes("Side data:") ||
+        data.includes("cpb: bitrate") ||
+        data.includes("vbv_delay:") ||
+        data.includes("Auto-inserting") ||
+        data.includes("bitstream filter") ||
+        data.includes("Reconfiguring filter graph") ||
+        data.includes("dup=") ||
+        data.includes("drop=");
+
+      // Only treat as error if it's not FFmpeg normal output or progress bars
+      if (!isFFmpegNormalOutput && !isTqdmProgressBar) {
       showLogPanel();
       appendToLog(`ERROR: ${data}`, "error");
+      } else {
+        // Just log FFmpeg output and progress bars normally without ERROR prefix
+        appendToLog(data);
+      }
     });
 
     // Listen for YouTube URL requests
@@ -417,11 +645,16 @@ function setupEventHandlers() {
     });
 
     // window.api.onAskReplaceVideos handler:
-    window.api.onAskReplaceVideos(() => {
-      debugLog("Replace videos question received");
+    window.api.onAskReplaceVideos((data) => {
+      debugLog("Replace videos question received:", data);
+      
+      // Debug: Check if modal elements exist
+      debugLog("replaceVideosPrompt element:", replaceVideosPrompt);
+      debugLog("Modal has 'hidden' class:", replaceVideosPrompt ? replaceVideosPrompt.classList.contains("hidden") : "N/A");
       
       // Make sure all the modal buttons are visible
       const modalContent = document.querySelector("#replace-videos-prompt .modal-content");
+      debugLog("Modal content found:", !!modalContent);
       if (modalContent) {
         // Find the preview button
         const previewBtn = document.getElementById("preview-video");
@@ -434,13 +667,8 @@ function setupEventHandlers() {
           // Use the working approach for the click handler
           previewBtn.onclick = function() {
             try {
-              const username = document.getElementById("lastfm-username").value;
-              const year = document.getElementById("target-year").value;
-              const month = document.getElementById("target-month").value;
-              const numSongs = document.getElementById("num-songs").value;
-              
               // Use the filename
-              const filename = `${username}_top${numSongs}_${year}_${month}.mp4`;
+              const filename = generateVideoFilename();
               
               debugLog("Attempting to open video:", filename);
               
@@ -473,13 +701,8 @@ function setupEventHandlers() {
             newBtn.onclick = function() {
               // Same code as above
               try {
-                const username = document.getElementById("lastfm-username").value;
-                const year = document.getElementById("target-year").value;
-                const month = document.getElementById("target-month").value;
-                const numSongs = document.getElementById("num-songs").value;
-                
                 // Use the filename
-                const filename = `${username}_top${numSongs}_${year}_${month}.mp4`;
+                const filename = generateVideoFilename();
                 
                 debugLog("Attempting to open video:", filename);
                 
@@ -504,7 +727,9 @@ function setupEventHandlers() {
       }
       
       // Show the dialog
+      debugLog("About to show replace videos modal");
       replaceVideosPrompt.classList.remove("hidden");
+      debugLog("Modal should now be visible, hidden class removed");
     });
 
     // Form submission
@@ -584,13 +809,8 @@ function setupEventHandlers() {
         debugLog("Open video button clicked");
         
         try {
-          const username = document.getElementById("lastfm-username").value;
-          const year = document.getElementById("target-year").value;
-          const month = document.getElementById("target-month").value;
-          const numSongs = document.getElementById("num-songs").value;
-          
           // Just use the filename for now
-          const filename = `${username}_top${numSongs}_${year}_${month}.mp4`;
+          const filename = generateVideoFilename();
           
           debugLog("Attempting to open video:", filename);
           
@@ -687,15 +907,17 @@ function setupEventHandlers() {
 
     // Respond to "replace videos" question
     yesReplace.addEventListener("click", () => {
-      debugLog("Yes replace button clicked");
+      debugLog("Yes replace button clicked - sending 'yes' to Python process");
       window.api.respondReplaceVideos("yes");
       replaceVideosPrompt.classList.add("hidden");
+      debugLog("Replace videos modal hidden after yes click");
     });
 
     noReplace.addEventListener("click", () => {
-      debugLog("No replace button clicked");
+      debugLog("No replace button clicked - sending 'no' to Python process");
       window.api.respondReplaceVideos("no");
       replaceVideosPrompt.classList.add("hidden");
+      debugLog("Replace videos modal hidden after no click");
     });
 
     // Respond to file overwrite question
@@ -831,6 +1053,21 @@ function setupEventHandlers() {
       });
     }
 
+    // Add escape key handler to close settings modal
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        debugLog("Escape key pressed");
+        
+        // Check if settings modal is open and close it
+        if (settingsModal && !settingsModal.classList.contains("hidden")) {
+          debugLog("Closing settings modal with escape key");
+          settingsModal.classList.add("hidden");
+          // Reset to saved values when canceling with escape
+          loadApiKeys();
+        }
+      }
+    });
+
     debugLog("All event handlers set up successfully");
   } catch (error) {
     console.error("Error setting up event handlers:", error);
@@ -940,7 +1177,8 @@ async function handleFormSubmit(e) {
   const config = {
     username: document.getElementById("lastfm-username").value,
     year: document.getElementById("target-year").value,
-    month: document.getElementById("target-month").value,
+    timePeriod: document.getElementById("time-period").value,
+    month: document.getElementById("target-month").value || "",
     numSongs: document.getElementById("num-songs").value,
     lastfmApiKey: lastfmApiKeyInput.value,
     youtubeApiKey: youtubeApiKeyInput.value,
@@ -948,6 +1186,18 @@ async function handleFormSubmit(e) {
     codec: document.getElementById("codec-selection").value || "libx264",
     maxQuality: document.getElementById("max-quality-selection").value || "1080",
   };
+
+  // Validate that month is selected for monthly compilations
+  if (config.timePeriod === "month" && !config.month) {
+    alert("Please select a month for monthly compilations.");
+    return;
+  }
+
+  // Validate that year is provided for monthly and yearly compilations
+  if ((config.timePeriod === "month" || config.timePeriod === "year") && !config.year) {
+    alert("Please enter a year for monthly and yearly compilations.");
+    return;
+  }
 
   debugLog("Config:", config);
 

@@ -220,6 +220,7 @@ function registerIpcHandlers() {
       "Received run-videofm request with config:",
       config.username,
       config.year,
+      config.timePeriod,
       config.month
     );
     try {
@@ -250,7 +251,7 @@ function registerIpcHandlers() {
         debugLog("App is packaged, looking for executable");
 
         const resourcesPath = process.resourcesPath;
-        const executablePath = path.join(process.resourcesPath, "extraResources", "videofm", "videofm");
+        const executablePath = path.join(process.resourcesPath, "extraResources", "videofm");
         
         debugLog(
           `Checking if executable exists at ${executablePath}: ${fs.existsSync(
@@ -268,7 +269,11 @@ function registerIpcHandlers() {
               fs.chmodSync(executablePath, "755");
               debugLog("Set executable permissions");
             } catch (err) {
-              debugLog("Error setting executable permissions:", err);
+              if (err.code === 'EROFS') {
+                debugLog("Running from read-only volume (.dmg), files should already be executable");
+              } else {
+                debugLog("Error setting executable permissions:", err);
+              }
             }
           }
         }
@@ -419,7 +424,11 @@ function registerIpcHandlers() {
             fs.chmodSync(exePath, "755");
             debugLog("Set executable permissions on:", exePath);
           } catch (err) {
-            debugLog("Warning: Could not set executable permissions:", err);
+            if (err.code === 'EROFS') {
+              debugLog("Running from read-only volume (.dmg), files should already be executable");
+            } else {
+              debugLog("Warning: Could not set executable permissions:", err);
+            }
           }
         }
 
@@ -448,6 +457,7 @@ function registerIpcHandlers() {
         pythonProcess = spawn(
           "python",
           [
+            "-u",  // Unbuffered stdout/stderr
             "videofm.py",
             "--lastfm-api-key",
             config.lastfmApiKey,
@@ -492,11 +502,22 @@ function registerIpcHandlers() {
 
       pythonProcess.on("error", (error) => {
         debugLog("Process error event:", error.message);
+        let errorMessage = "Process error: " + error.message;
+        
+        // Check for permission errors when running from DMG
+        if (error.code === 'EACCES' && error.message.includes('EACCES')) {
+          errorMessage = `Permission denied error detected.\n\n` +
+            `🔧 SOLUTION: Copy video.fm.app to your Applications folder\n\n` +
+            `This error occurs when running from the mounted disk image (.dmg). ` +
+            `For proper functionality:\n` +
+            `1. Open Finder\n` +
+            `2. Drag video.fm.app from the disk image to Applications folder\n` +
+            `3. Run the app from Applications instead\n\n` +
+            `Original error: ${error.message}`;
+        }
+        
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send(
-            "python-error",
-            "Process error: " + error.message
-          );
+          mainWindow.webContents.send("python-error", errorMessage);
         }
       });
 
@@ -530,6 +551,9 @@ function registerIpcHandlers() {
         } else if (output.includes("Enter the target year")) {
           debugLog("Sending year:", config.year);
           pythonProcess.stdin.write(config.year + "\n");
+        } else if (output.includes("Enter time period")) {
+          debugLog("Sending time period:", config.timePeriod);
+          pythonProcess.stdin.write(config.timePeriod + "\n");
         } else if (output.includes("Enter the target month")) {
           debugLog("Sending month:", config.month);
           pythonProcess.stdin.write(config.month + "\n");
@@ -569,9 +593,14 @@ function registerIpcHandlers() {
       return new Promise((resolve, reject) => {
         let output = "";
 
-        pythonProcess.stdout.on("data", (data) => {
+        // We already have a stdout handler above that sends to renderer
+        // This handler just accumulates for final processing
+        const outputHandler = (data) => {
           output += data.toString();
-        });
+        };
+        
+        // Add the accumulator handler
+        pythonProcess.stdout.on("data", outputHandler);
 
         pythonProcess.on("close", (code) => {
           debugLog("Process closed with code:", code);
@@ -602,7 +631,22 @@ function registerIpcHandlers() {
       });
     } catch (error) {
       debugLog("Error running process:", error.message);
-      return { success: false, error: error.message };
+      
+      let errorMessage = error.message;
+      
+      // Check for permission errors when running from DMG
+      if (error.code === 'EACCES' || error.message.includes('EACCES')) {
+        errorMessage = `Permission denied error detected.\n\n` +
+          `🔧 SOLUTION: Copy video.fm.app to your Applications folder\n\n` +
+          `This error occurs when running from the mounted disk image (.dmg). ` +
+          `For proper functionality:\n` +
+          `1. Open Finder\n` +
+          `2. Drag video.fm.app from the disk image to Applications folder\n` +
+          `3. Run the app from Applications instead\n\n` +
+          `Original error: ${error.message}`;
+      }
+      
+      return { success: false, error: errorMessage };
     }
   });
 

@@ -127,11 +127,27 @@ label {
   font-size: 0.9rem;
   background-color: var(--input-bg);
   color: var(--text-color);
+  height: 38px; /* Ensure consistent height for all form controls */
+  box-sizing: border-box;
 }
 
 .form-control:focus {
   outline: none;
   border-color: var(--primary-color);
+}
+
+/* Ensure number inputs match select styling */
+input[type="number"].form-control {
+  -webkit-appearance: none;
+  -moz-appearance: textfield;
+  appearance: none;
+}
+
+/* Remove spinner buttons for cleaner look */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 /* Placeholder text styling */
