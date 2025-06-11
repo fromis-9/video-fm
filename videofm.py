@@ -1,1307 +1,536 @@
-'''
-video.fm
-Create video compilations of your top songs from Last.fm.
-'''
+#!/usr/bin/env python3
+"""
+video.fm - Video Compilation Creator from Last.fm Top Songs
+
+A modular application that creates video compilations from Last.fm top songs using YouTube videos.
+Transformed from monolithic architecture to clean service-oriented design.
+
+Author: video.fm team
+Architecture: Service-oriented with clean separation of concerns
+"""
 
 import os
 import sys
-import codecs
-import subprocess
-from pathlib import Path
+import logging
+from datetime import datetime, timedelta
+from typing import Optional, Tuple, List
 
-# Debugging function for encoding issues
-def safe_decode(data):
-    """Safely decode bytes to string, handling different types."""
-    if data is None:
-        return None
-    if isinstance(data, bytes):
-        return data.decode('utf-8', errors='replace')
-    if isinstance(data, str):
-        return data
-    return str(data)
+# Core configuration and services
+from config import VideoConfig
+from services.song_service import SongService
+from services.cache_service import CacheService
+from services.search_service import SearchService
+from services.compilation_service import CompilationService
 
-# Fix for multiprocessing with PyInstaller
-if getattr(sys, 'frozen', False):
-    # Running as compiled executable
-    os.environ['PYTHONHASHSEED'] = '1'
-    # Handle multiprocessing freeze support
-    import multiprocessing
-    multiprocessing.freeze_support()
+# Video processing components
+from downloader import VideoDownloader
+from processor import VideoProcessor
 
-# Force UTF-8 encoding for stdout
-if sys.platform == 'win32':
-    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
-    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
-    
-import requests
-import yt_dlp
-import ffmpeg
-import json
-import time
-import datetime
-import calendar
-import re
-import argparse
-import tempfile
-from dotenv import load_dotenv
-from collections import Counter
-from tqdm import tqdm
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from shutil import which
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('videofm.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
-# Import our new modular API clients
-from core.api.lastfm_client import create_lastfm_client
-from core.api.youtube_client import create_youtube_client
-from core.utils.cache import load_cache, save_cache
 
-# Determine if running as packaged app
-is_frozen = getattr(sys, 'frozen', False)
-
-# Set up paths based on if we're running packaged or as a script
-if is_frozen:
-    # If running as packaged app, use user's home directory
-    base_dir = Path.home() / "Library/Application Support/video.fm"
-    # Ensure directory exists
-    base_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Set cache and video output directories
-    CACHE_DIR = base_dir / "cache"
-    VIDEO_OUTPUT_DIR = base_dir / "clips"
-else:
-    # When running as script, use current directory
-    CACHE_DIR = Path("cache")
-    VIDEO_OUTPUT_DIR = Path("clips")
-
-# Parse command-line arguments
-parser = argparse.ArgumentParser(description='video.fm - Create music video compilations')
-parser.add_argument('--env-path', help='Path to .env file')
-parser.add_argument('--output-dir', help='Directory to save output videos')
-parser.add_argument('--codec', default='libx264', help='Video codec to use')
-parser.add_argument('--max-quality', default='1080', help='Maximum video quality (480, 720, 1080, 1440, 2160)')
-parser.add_argument('--lastfm-api-key', help='Last.fm API key')
-parser.add_argument('--youtube-api-key', help='YouTube API key')
-args = parser.parse_args()
-
-if args and hasattr(args, 'env_path') and args.env_path:
-    load_dotenv(args.env_path)
-else:
-    load_dotenv()  # Fallback to default behavior
-
-SELECTED_CODEC = args.codec if args and hasattr(args, 'codec') and args.codec else "libx264"
-MAX_VIDEO_QUALITY = args.max_quality if args and hasattr(args, 'max_quality') and args.max_quality else "1080"
-
-# Video quality settings
-VIDEO_CRF = "18"  # Lower CRF = higher quality (0-51, where 18 is visually lossless)
-VIDEO_BITRATE = "8M"  # High bitrate for quality
-AUDIO_BITRATE = "320k"  # Higher audio bitrate for better sound
-
-# ==== Configuration ====
-LASTFM_API_KEY = args.lastfm_api_key or os.getenv("LASTFM_API_KEY")
-YOUTUBE_API_KEY = args.youtube_api_key or os.getenv("YOUTUBE_API_KEY")
-CHORUS_START = "00:01:00"  # Approximate start time of the chorus
-CLIP_DURATION = 15  # Duration of each clip in seconds
-
-# Initialize API clients (will be set up after key validation)
-lastfm_client = None
-youtube_client = None
-
-# ===== USER CONFIGURATION =====
-# Codec selection - Change this value to use a different encoder
-# Available options:
-# - "h264_videotoolbox": Hardware accelerated H.264 (Mac)
-# - "libx264": Software H.264 (compatible with all systems)
-# - "h264_nvenc": NVIDIA GPU accelerated H.264
-# - "h264_amf": AMD GPU accelerated H.264
-# - "h264_qsv": Intel QuickSync hardware accelerated H.264
-# - "copy": Copy codec (fastest, no re-encoding)
-
-# OLD - SELECTED_CODEC = "libx264"  # Default codec - change this line if needed
-
-# Check if ffmpeg is installed
-if not which("ffmpeg"):
-    print("FFmpeg not found. Attempting to find bundled FFmpeg...")
-    try:
-        # Initialize flag to track if we've found FFmpeg
-        ffmpeg_found = False
-        
-        if is_frozen:
-            # Check app-bundled FFmpeg first
-            base_path = os.path.dirname(sys.executable)
-            
-            if sys.platform == 'darwin':  # macOS specific code
-                # For macOS app structure
-                if '.app' in base_path:
-                    # Go up to Contents
-                    contents_path = base_path
-                    while os.path.dirname(contents_path) and os.path.basename(os.path.dirname(contents_path)) != 'Contents':
-                        contents_path = os.path.dirname(contents_path)
-                        if contents_path == os.path.dirname(contents_path):  # Prevent infinite loop
-                            break
-                    
-                    # Look for bundled FFmpeg in Resources directory
-                    bundled_path = os.path.join(
-                        os.path.dirname(contents_path),
-                        'Resources/extraResources/bin'
-                    )
-                    
-                    # Check if FFmpeg exists and fix permissions
-                    ffmpeg_path = os.path.join(bundled_path, 'ffmpeg')
-                    ffprobe_path = os.path.join(bundled_path, 'ffprobe')
-                    
-                    if os.path.exists(ffmpeg_path) and os.path.exists(ffprobe_path):
-                        # Try to set executable permissions
-                        try:
-                            print(f"Setting executable permissions on FFmpeg binaries...")
-                            os.chmod(ffmpeg_path, 0o755)  # rwxr-xr-x
-                            os.chmod(ffprobe_path, 0o755)
-                            print(f"✅ Permissions set successfully")
-                        except OSError as e:
-                            if e.errno == 30:  # Read-only file system
-                                print(f"⚠️ Running from read-only volume (likely .dmg). Files should already be executable.")
-                            else:
-                                print(f"⚠️ Could not set permissions: {e}")
-                        except Exception as e:
-                            print(f"⚠️ Could not set permissions: {e}")
-                        
-                        # Add to PATH
-                        os.environ["PATH"] = bundled_path + os.pathsep + os.environ.get("PATH", "")
-                        print(f"✅ Using bundled FFmpeg from: {bundled_path}")
-                        ffmpeg_found = True
-            
-            elif sys.platform == 'win32':
-                # Windows-specific code here - won't affect Mac
-                # For Windows app structure
-                base_path = os.path.dirname(sys.executable)
-                
-                # Try multiple possible locations for extraResources
-                resources_path = os.path.join(os.path.dirname(base_path), 'resources')
-                extraResources_path = os.path.join(resources_path, 'extraResources', 'bin')
-                
-                # Print paths for debugging
-                print(f"Checking for FFmpeg.exe in {extraResources_path}")
-                
-                # Check main location first
-                if os.path.exists(os.path.join(extraResources_path, 'ffmpeg.exe')):
-                    os.environ["PATH"] = extraResources_path + os.pathsep + os.environ.get("PATH", "")
-                    print(f"Found bundled FFmpeg in: {extraResources_path}")
-                    ffmpeg_found = True
-                else:
-                    # Try alternate paths (Windows-specific)
-                    alternate_paths = [
-                        os.path.join(resources_path, 'bin'),
-                        os.path.join(base_path, 'resources', 'extraResources', 'bin'),
-                        os.path.join(os.path.dirname(os.path.dirname(base_path)), 'resources', 'extraResources', 'bin')
-                    ]
-                    
-                    for alt_path in alternate_paths:
-                        print(f"Checking alternate path: {alt_path}")
-                        if os.path.exists(os.path.join(alt_path, 'ffmpeg.exe')):
-                            os.environ["PATH"] = alt_path + os.pathsep + os.environ.get("PATH", "")
-                            print(f"Found bundled FFmpeg in alternate path: {alt_path}")
-                            ffmpeg_found = True
-                            break
-        
-        # Continue with existing path checks if not found
-        if not ffmpeg_found:
-            # Define potential paths based on environment
-            if is_frozen:
-                # When frozen, check relative to the executable
-                base_path = os.path.dirname(sys.executable)
-                potential_ffmpeg_paths = [
-                    os.path.join(base_path, "bin"),
-                    os.path.join(base_path, "Resources", "bin")
-                ]
-                
-                # Add platform-specific paths
-                if sys.platform == 'darwin':
-                    potential_ffmpeg_paths.extend([
-                        "/usr/local/bin",
-                        "/opt/homebrew/bin"
-                    ])
-                elif sys.platform == 'win32':
-                    potential_ffmpeg_paths.extend([
-                        "C:\\Program Files\\ffmpeg\\bin",
-                        os.path.join(os.environ.get('PROGRAMFILES', 'C:\\Program Files'), "ffmpeg", "bin")
-                    ])
-            else:
-                # In development mode
-                if sys.platform == 'darwin':
-                    potential_ffmpeg_paths = [
-                        "/usr/local/bin",
-                        "/opt/homebrew/bin"
-                    ]
-                elif sys.platform == 'win32':
-                    potential_ffmpeg_paths = [
-                        "C:\\Program Files\\ffmpeg\\bin",
-                        os.path.join(os.environ.get('PROGRAMFILES', 'C:\\Program Files'), "ffmpeg", "bin")
-                    ]
-                else:
-                    potential_ffmpeg_paths = [
-                        "/usr/local/bin",
-                        "/usr/bin"
-                    ]
-            
-            # Check each potential path
-            for check_path in potential_ffmpeg_paths:
-                ffmpeg_exe = "ffmpeg.exe" if sys.platform == 'win32' else "ffmpeg"
-                if os.path.exists(os.path.join(check_path, ffmpeg_exe)):
-                    ffmpeg_path = check_path
-                    os.environ["PATH"] = ffmpeg_path + os.pathsep + os.environ.get("PATH", "")
-                    print(f"✅ Found FFmpeg path: {ffmpeg_path}")
-                    ffmpeg_found = True
-                    break
-            
-            if not ffmpeg_found:
-                print("❌ FFmpeg not found in expected locations")
-                print("Please install FFmpeg manually: https://ffmpeg.org/download.html")
-                sys.exit(1)
-    except Exception as e:
-        print(f"❌ Failed to setup FFmpeg: {e}")
-        print("Please install FFmpeg manually: https://ffmpeg.org/download.html")
-        sys.exit(1)
-
-# Validate API keys before proceeding
-if not LASTFM_API_KEY:
-    print("❌ Error: LASTFM_API_KEY environment variable is not set")
-    print("Please create a .env file with your Last.fm API key or set it in your environment")
-    sys.exit(1)
-    
-if not YOUTUBE_API_KEY:
-    print("❌ Error: YOUTUBE_API_KEY environment variable is not set")
-    print("Please create a .env file with your YouTube API key or set it in your environment")
-    sys.exit(1)
-
-# Initialize API clients
-try:
-    lastfm_client = create_lastfm_client(LASTFM_API_KEY)
-    youtube_client = create_youtube_client(YOUTUBE_API_KEY)
-    print("✅ API clients initialized successfully")
-except Exception as e:
-    print(f"❌ Error initializing API clients: {e}")
-    sys.exit(1)
-
-# Create necessary directories
-os.makedirs(CACHE_DIR, exist_ok=True)
-os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
-
-# YouTube service will be initialized through the modular client
-
-# Cache functions are now imported from core.utils.cache
-
-# Load cached data
-video_cache = load_cache("video_cache.json")
-progress = load_cache("progress.json")
-lastfm_cache = load_cache("lastfm_cache.json")
-
-# Save caches to ensure they exist
-save_cache(video_cache, "video_cache.json") 
-save_cache(progress, "progress.json")  
-save_cache(lastfm_cache, "lastfm_cache.json")
-
-def ensure_clean_workspace():
-    """Ensure the workspace is clean before starting processing."""
-    # Clean up any leftover files from previous runs
-    if VIDEO_OUTPUT_DIR.exists():
-        leftover_files = list(VIDEO_OUTPUT_DIR.glob("*.mp4"))
-        if leftover_files:
-            print(f"🧹 Found {len(leftover_files)} leftover files from previous run. Cleaning up...")
-            for file in leftover_files:
-                try:
-                    file.unlink()
-                    print(f"✅ Removed: {file.name}")
-                except Exception as e:
-                    print(f"⚠️ Could not remove {file.name}: {e}")
-    
-    # Ensure directories exist
-    VIDEO_OUTPUT_DIR.mkdir(exist_ok=True)
-    CACHE_DIR.mkdir(exist_ok=True)
-    print("✅ Workspace prepared successfully.")
-
-# ==== User Configuration ====
-
-# Get Last.fm username
-LASTFM_USER = input("Enter your Last.fm username: ").strip()
-
-# Get target year and month
-TARGET_YEAR = input("Enter the target year (YYYY): ").strip()
-
-# Get time period (monthly or yearly)
-TIME_PERIOD = input("Enter time period (month/year): ").strip().lower()
-
-if TIME_PERIOD == "month":
-    TARGET_MONTH = input("Enter the target month (MM): ").strip()
-else:
-    TARGET_MONTH = ""  # Empty for yearly compilations
-
-# Get number of songs to include
-while True:
-    num_songs_input = input("Enter the number of top songs to include (1-50): ").strip()
-    
-    if num_songs_input.isdigit():
-        num_songs = int(num_songs_input)
-        if 1 <= num_songs <= 50:
-            NUM_SONGS = num_songs
-            break
-        else:
-            print("❌ Please enter a number between 1 and 50.")
-    else:
-        print("❌ Invalid input. Please enter a valid number.")
-
-# Display the selected codec and quality to the user
-print(f"\n🎬 Using video codec: {SELECTED_CODEC}")
-print(f"📺 Maximum video quality: {MAX_VIDEO_QUALITY}p")
-
-# Ask if user wants to manually input YouTube URLs for missing videos
-manual_youtube_input = input(
-    "❓ Do you want to manually input YouTube URLs if a search fails? (yes/no): "
-).strip().lower()
-
-ALLOW_MANUAL_YOUTUBE = manual_youtube_input == "yes"
-
-# Set up final video filename based on running mode
-if TIME_PERIOD == "month":
-    filename_suffix = f"{TARGET_YEAR}_{TARGET_MONTH}"
-elif TIME_PERIOD == "year":
-    filename_suffix = f"{TARGET_YEAR}"
-else:  # alltime
-    filename_suffix = "alltime"
-
-if args and hasattr(args, 'output_dir') and args.output_dir:
-    # Use output directory specified by command line
-    FINAL_VIDEO = os.path.join(args.output_dir, f"{LASTFM_USER}_top{NUM_SONGS}_{filename_suffix}.mp4")
-else:
-    # If no output directory specified, use base directory
-    if is_frozen:
-        FINAL_VIDEO = os.path.join(base_dir, f"{LASTFM_USER}_top{NUM_SONGS}_{filename_suffix}.mp4")
-    else:
-        FINAL_VIDEO = f"{LASTFM_USER}_top{NUM_SONGS}_{filename_suffix}.mp4"
-
-# Validate inputs
-if (TIME_PERIOD == "month" or TIME_PERIOD == "year") and (not TARGET_YEAR.isdigit() or len(TARGET_YEAR) != 4):
-    print("❌ Invalid year format. Please enter a valid year (YYYY).")
-    sys.exit(1)
-
-if TIME_PERIOD not in ["month", "year", "alltime"]:
-    print("❌ Invalid time period. Please enter 'month', 'year', or 'alltime'.")
-    sys.exit(1)
-
-if TIME_PERIOD == "month":
-    if not TARGET_MONTH.isdigit() or not (1 <= int(TARGET_MONTH) <= 12):
-        print("❌ Invalid month format. Please enter a number between 1 and 12.")
-        sys.exit(1)
-
-def get_top_songs():
-    """Fetch top songs for the specified time period from Last.fm.
-    
-    This is now a wrapper around the modular Last.fm client.
-    
-    Returns:
-        list: List of tuples containing (artist, title) for the top songs
+class VideoFMApp:
     """
-    global lastfm_client
+    Main application orchestrator for video.fm
     
-    if not lastfm_client:
-        print("❌ Last.fm client not initialized")
-        return []
-    
-    return lastfm_client.get_top_songs(
-        username=LASTFM_USER,
-        time_period=TIME_PERIOD,
-        target_year=int(TARGET_YEAR),
-        target_month=int(TARGET_MONTH) if TARGET_MONTH else None,
-        num_songs=NUM_SONGS
-    )
-
-def load_progress():
-    """Load progress data from cache."""
-    return load_cache("progress.json")
-
-def save_progress(progress):
-    """Save progress data to cache."""
-    save_cache(progress, "progress.json")
-
-# Load previous progress
-progress = load_progress()
-
-def clean_query(text):
-    """Remove special characters from text for YouTube search.
-    
-    Args:
-        text: Text string to clean
-        
-    Returns:
-        str: Cleaned text string
-    """
-    return re.sub(r"[^\w\s-]", "", text)  # Removes punctuation except spaces and hyphens
-
-def update_youtube_api_key():
-    """Prompt user for a new YouTube API key and update the client."""
-    global YOUTUBE_API_KEY, youtube_client
-    print("⚠️ API quota exceeded. Try again tomorrow, or enter a new API key:")
-    YOUTUBE_API_KEY = input("Enter new API key: ").strip()
-    if youtube_client:
-        youtube_client.update_api_key(YOUTUBE_API_KEY)
-
-def search_youtube_video(artist, title):
-    """Search for a YouTube video matching the artist and title.
-    
-    This is now a wrapper around the modular YouTube client.
-    
-    Args:
-        artist: Artist name
-        title: Song title
-        
-    Returns:
-        str: YouTube URL if found, None if not found
-    """
-    global youtube_client
-    
-    if not youtube_client:
-        print("❌ YouTube client not initialized")
-        return None
-    
-    try:
-        return youtube_client.search_video(artist, title, allow_manual_input=ALLOW_MANUAL_YOUTUBE)
-    except HttpError as e:
-        if e.resp.status == 403:
-            print("⚠️ YouTube API quota exceeded!")
-            update_youtube_api_key()
-            # Try again with new key
-            return youtube_client.search_video(artist, title, allow_manual_input=ALLOW_MANUAL_YOUTUBE)
-        else:
-            print(f"❌ YouTube API Error: {e}")
-            return None
-    
-# Function is now handled by the modular YouTube client - no implementation needed here
-
-def download_video(video_url, output_path, start_time=None, duration=None):
-    """Download a video and optionally extract a precise clip.
-    
-    Args:
-        video_url: YouTube URL to download
-        output_path: Path to save the output video
-        start_time: Start time for clip extraction (string HH:MM:SS or seconds)
-        duration: Duration of clip in seconds
-        
-    Returns:
-        bool: True if successful, False otherwise
+    Coordinates between services to create video compilations from Last.fm data.
     """
     
-    # Convert to Path object if it's a string
-    output_path = Path(output_path)
+    def __init__(self):
+        """Initialize the application with all required services."""
+        logger.info("Initializing video.fm application...")
+        
+        # Load configuration
+        self.config = VideoConfig()
+        
+        # Initialize core services
+        self.cache_service = CacheService(self.config.cache_dir)
+        self.song_service = SongService(self.cache_service)
+        self.search_service = SearchService(self.cache_service)
+        self.compilation_service = CompilationService(self.config)
+        
+        # Initialize video processing components
+        self.downloader = VideoDownloader(self.config)
+        self.processor = VideoProcessor(self.config)
+        
+        logger.info("Application initialization complete")
     
-    # Check if output file already exists and is valid
-    if output_path.exists() and output_path.stat().st_size > 0:
-        print(f"✅ Output file already exists and is valid: {output_path}")
+    def validate_environment(self) -> bool:
+        """
+        Validate that all required environment variables and dependencies are available.
+        
+        Returns:
+            bool: True if environment is valid, False otherwise
+        """
+        logger.info("Validating environment...")
+        
+        # Check required API keys
+        required_env_vars = ['LASTFM_API_KEY', 'YOUTUBE_API_KEY']
+        missing_vars = []
+        
+        for var in required_env_vars:
+            if not os.getenv(var):
+                missing_vars.append(var)
+        
+        if missing_vars:
+            logger.error(f"Missing required environment variables: {missing_vars}")
+            print(f"\n❌ Missing required environment variables: {', '.join(missing_vars)}")
+            print("Please set these variables and try again.")
+            return False
+        
+        # Validate external dependencies
+        try:
+            import yt_dlp
+            import ffmpeg
+            logger.info("External dependencies validated successfully")
+        except ImportError as e:
+            logger.error(f"Missing required dependency: {e}")
+            print(f"\n❌ Missing required dependency: {e}")
+            print("Please install all dependencies and try again.")
+            return False
+        
+        logger.info("Environment validation successful")
         return True
-
-    # Windows-specific handling
-    if sys.platform == 'win32':
-        print("Windows platform detected - using hidden batch approach for download")
-        try:
-            # Create Windows-appropriate paths
-            base_dir = Path.home() / "AppData/Local/video.fm/clips"
-            base_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Create temporary download path
-            tmp_download_path = output_path.with_suffix("_download.mp4")
-            
-            # Clean up any existing temporary file
-            if tmp_download_path.exists():
-                try:
-                    tmp_download_path.unlink()
-                except Exception as e:
-                    print(f"⚠️ Could not remove existing temp file {tmp_download_path}: {e}")
-            
-            print(f"Downloading from {video_url} to {tmp_download_path}")
-            
-            # Create a temporary batch file to run yt-dlp
-            batch_file = base_dir / "download.bat"
-            
-            # Write batch file contents for downloading - with hidden window execution
-            with open(batch_file, "w") as f:
-                f.write(f'@echo off\n')
-                f.write(f'echo Downloading with yt-dlp...\n')
-                f.write(f'yt-dlp "{video_url}" -o "{tmp_download_path}" --format mp4\n')
-            
-            # Execute batch file with hidden window
-            print(f"Executing hidden batch file for download")
-            
-            # Use startupinfo to hide the console window
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = 0  # SW_HIDE
-            
-            # Run the process with hidden window
-            subprocess.run(str(batch_file), startupinfo=startupinfo)
-            
-            # Clean up batch file
-            try:
-                batch_file.unlink()
-            except:
-                pass
-            
-            # Check if download succeeded, then proceed with normal processing
-            if tmp_download_path.exists() and tmp_download_path.stat().st_size > 0:
-                print(f"Download successful: {tmp_download_path}")
-                
-                # Extract clip if needed
-                if start_time is not None and duration is not None:
-                    # Convert start_time to seconds if it's in HH:MM:SS format
-                    if isinstance(start_time, str) and ":" in start_time:
-                        h, m, s = map(int, start_time.split(":"))
-                        start_seconds = h * 3600 + m * 60 + s
-                    else:
-                        start_seconds = int(start_time)
-                    
-                    # Format time for ffmpeg
-                    start_time_str = str(datetime.timedelta(seconds=start_seconds))
-                    
-                    print(f"✂️ Extracting {duration}s clip starting at {start_time_str}")
-                    
-                    # Use os.system for clip extraction to avoid encoding issues
-                    cmd = f'ffmpeg -i "{tmp_download_path}" -ss {start_time_str} -t {duration} -c:v {SELECTED_CODEC} -crf {VIDEO_CRF} -c:a aac -b:a {AUDIO_BITRATE} -r 30 "{output_path}" -y'
-                    print(f"Running command: {cmd}")
-                    os.system(cmd)
-                    
-                    # Clean up downloaded file
-                    try:
-                        tmp_download_path.unlink()
-                    except:
-                        pass
-                    
-                    return output_path.exists()
-                else:
-                    # If no clip extraction needed, just rename
-                    tmp_download_path.rename(output_path)
-                    return True
-            else:
-                print(f"Download failed: {tmp_download_path} not found or empty")
-                return False
+    
+    def get_user_input(self) -> Tuple[str, int, str, Optional[int], Optional[int]]:
+        """
+        Get user input for compilation parameters.
         
-        except Exception as e:
-            print(f"❌ Error during Windows approach: {type(e).__name__}: {str(e)}")
-            return False
-    
-    # Original code for non-Windows platforms
-    
-    # Ensure all path and URL arguments are strings, not bytes
-    if isinstance(video_url, bytes):
-        video_url = video_url.decode('utf-8')
-    if isinstance(start_time, bytes) and start_time is not None:
-        start_time = start_time.decode('utf-8')
-    
-    # Temporary paths for processing using pathlib
-    tmp_path = output_path.with_name(output_path.stem + "_full.mp4")
-    tmp_clip_path = output_path.with_name(output_path.stem + "_tmp.mp4")
-    
-    # Clean up any existing temporary files first
-    for temp_file in [tmp_path, tmp_clip_path]:
-        if temp_file.exists():
-            try:
-                temp_file.unlink()
-                print(f"🧹 Cleaned up existing temp file: {temp_file}")
-            except Exception as e:
-                print(f"⚠️ Could not remove existing temp file {temp_file}: {e}")
-    
-    # Create progress bar for download
-    progress_bar = tqdm(total=100, desc="Downloading", unit="%", position=0, leave=True)
+        Returns:
+            Tuple[str, int, str, Optional[int], Optional[int]]: username, number of songs, time period, target_year, target_month
+        """
+        print("\n🎵 Welcome to video.fm - Video Compilation Creator")
+        print("=" * 50)
 
-    def progress_hook(d):
-        """Update progress bar during download."""
-        if d['status'] == 'downloading' and 'downloaded_bytes' in d and 'total_bytes' in d:
-            percentage = (d['downloaded_bytes'] / d['total_bytes']) * 100
-            progress_bar.n = percentage
-            progress_bar.refresh()
-        elif d['status'] == 'finished':
-            progress_bar.n = 100
-            progress_bar.close()
-
-    def get_format_selector():
-        """Get the appropriate format selector based on MAX_VIDEO_QUALITY setting."""
-        quality_map = {
-            "480": "best[height<=480]",
-            "720": "best[height<=720]", 
-            "1080": "best[height<=1080]",
-            "1440": "best[height<=1440]",
-            "2160": "best[height<=2160]"
-        }
-        
-        base_format = quality_map.get(MAX_VIDEO_QUALITY, "best[height<=1080]")
-        return f"{base_format}/best"
-
-    # Set up yt-dlp options
-    ydl_opts = {
-        'outtmpl': str(tmp_path),
-        'format': get_format_selector(),
-        'noplaylist': True,
-        'extractaudio': False,
-        'progress_hooks': [progress_hook],
-        'quiet': True,
-        'no_warnings': True,
-    }
-    
-    try:
-        # Step 1: Download the video
-        print(f"Starting download for URL: {video_url}")
-        print(f"Output path for download: {tmp_path}")
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
-            
-        # Check if download succeeded
-        if tmp_path.exists() and tmp_path.stat().st_size > 0:
-            print(f"✅ Download successful: {tmp_path} ({tmp_path.stat().st_size} bytes)")
+        username = os.getenv('LASTFM_USER')
+        if not username:
+            username = input("\nEnter your Last.fm username: ").strip()
+            if not username:
+                print("❌ Username is required!")
+                sys.exit(1)
         else:
-            print(f"❌ Download failed: File not found or empty at {tmp_path}")
-            return False
-        
-        # Step 2: Extract clip if needed
-        if start_time is not None and duration is not None and tmp_path.exists():
-            # Convert start_time to seconds if it's in HH:MM:SS format
-            if isinstance(start_time, str) and ":" in start_time:
-                h, m, s = map(int, start_time.split(":"))
-                start_seconds = h * 3600 + m * 60 + s
-            else:
-                start_seconds = int(start_time)
-            
-            # Format time for ffmpeg
-            start_time_str = str(datetime.timedelta(seconds=start_seconds))
-            
-            print(f"✂️ Extracting {duration}s clip starting at {start_time_str}")
-            
-            # For Method 1:
-            try:
-                # Method 1: Direct extraction with selected codec and aspect ratio preservation
-                # Use scale and pad filters to maintain 16:9 output while preserving original aspect ratio
-                scale_and_pad = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black"
-                cmd1 = f'ffmpeg -i "{tmp_path}" -ss {start_time_str} -t {duration} -vf "{scale_and_pad}" -c:v {SELECTED_CODEC} -crf {VIDEO_CRF} -c:a aac -b:a {AUDIO_BITRATE} -r 30 -vsync cfr "{output_path}" -y -loglevel warning'
-                print(f"Running FFmpeg command (method 1): {cmd1}")
-                
-                # Use subprocess instead of os.system
-                process1 = subprocess.run(cmd1, shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-                exit_code1 = process1.returncode
-                
-                # Print more detailed error information if available
-                if exit_code1 != 0:
-                    stderr1 = safe_decode(process1.stderr)
-                    stdout1 = safe_decode(process1.stdout)
-                    print(f"⚠️ FFmpeg method 1 exited with code: {exit_code1}")
-                    print(f"FFmpeg stderr: {stderr1}")
-                    print(f"FFmpeg stdout: {stdout1}")
-                
-                # Check if successful
-                if output_path.exists() and output_path.stat().st_size > 0:
-                    print(f"✅ Clip extracted successfully to {output_path}")
-                else:
-                    print("⚠️ Clip extraction failed with method 1, trying method 2...")
-                    
-                    # Method 2: Two-pass with segment extraction
-                    cmd2 = f'ffmpeg -i "{tmp_path}" -ss {start_time_str} -t {duration} -c copy "{tmp_clip_path}" -y -loglevel warning'
-                    print(f"Running FFmpeg command (method 2, part 1): {cmd2}")
-                    
-                    process2 = subprocess.run(cmd2, shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-                    exit_code2 = process2.returncode
-                    
-                    if exit_code2 != 0:
-                        stderr2 = safe_decode(process2.stderr)
-                        stdout2 = safe_decode(process2.stdout)
-                        print(f"⚠️ FFmpeg method 2 part 1 exited with code: {exit_code2}")
-                        print(f"FFmpeg stderr: {stderr2}")
-                        print(f"FFmpeg stdout: {stdout2}")
-                    
-                    if tmp_clip_path.exists() and tmp_clip_path.stat().st_size > 0:
-                        # Apply aspect ratio preservation in method 2 part 2
-                        cmd3 = f'ffmpeg -i "{tmp_clip_path}" -vf "{scale_and_pad}" -c:v {SELECTED_CODEC} -crf {VIDEO_CRF} -c:a aac -b:a {AUDIO_BITRATE} -r 30 -vsync cfr "{output_path}" -y -loglevel warning'
-                        print(f"Running FFmpeg command (method 2, part 2): {cmd3}")
-                        
-                        process3 = subprocess.run(cmd3, shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-                        exit_code3 = process3.returncode
-                        
-                        if exit_code3 != 0:
-                            stderr3 = safe_decode(process3.stderr)
-                            stdout3 = safe_decode(process3.stdout)
-                            print(f"⚠️ FFmpeg method 2 part 2 exited with code: {exit_code3}")
-                            print(f"FFmpeg stderr: {stderr3}")
-                            print(f"FFmpeg stdout: {stdout3}")
-                        
-                        print(f"✅ Clip extracted successfully with method 2 to {output_path}")
-                    else:
-                        print("⚠️ Clip extraction failed with method 2, trying method 3...")
-                        
-                        # Method 3: Fallback with aspect ratio preservation
-                        cmd4 = f'ffmpeg -i "{tmp_path}" -ss {start_time_str} -t {duration} -vf "{scale_and_pad}" -c:v {SELECTED_CODEC} -c:a aac -b:a {AUDIO_BITRATE} -r 30 "{output_path}" -y -loglevel warning'
-                        print(f"Running FFmpeg command (method 3): {cmd4}")
-                        
-                        process4 = subprocess.run(cmd4, shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-                        exit_code4 = process4.returncode
-                        
-                        if exit_code4 != 0:
-                            stderr4 = safe_decode(process4.stderr)
-                            stdout4 = safe_decode(process4.stdout)
-                            print(f"⚠️ FFmpeg method 3 exited with code: {exit_code4}")
-                            print(f"FFmpeg stderr: {stderr4}")
-                            print(f"FFmpeg stdout: {stdout4}")
-                        
-                        print(f"✅ Clip extracted with basic method to {output_path}")
-            
-            except Exception as e:
-                print(f"❌ Error during clip extraction: {type(e).__name__}: {str(e)}")
-                # Use full video as fallback
-                if tmp_path.exists():
-                    import shutil
-                    shutil.copy(tmp_path, output_path)
-                    print("⚠️ Using full video as fallback due to extraction error")
-            
-            # Clean up temporary files
-            for file_path in [tmp_path, tmp_clip_path]:
-                if file_path.exists():
-                    try:
-                        file_path.unlink()
-                    except Exception as e:
-                        print(f"⚠️ Could not remove temporary file {file_path}: {str(e)}")
-        
-        elif not tmp_path.exists():
-            print(f"❌ Download failed: {tmp_path} does not exist")
-            return False
-        
-        else:
-            # If no clip extraction needed, just rename the file
-            if tmp_path.exists():
-                tmp_path.rename(output_path)
-                
-        return output_path.exists()
-    
-    except Exception as e:
-        print(f"❌ Error during video processing: {type(e).__name__}: {str(e)}")
-        # Try to salvage by renaming if possible
-        if tmp_path.exists() and not output_path.exists():
-            try:
-                tmp_path.rename(output_path)
-                return True
-            except Exception as rename_error:
-                print(f"❌ Could not rename temp file: {str(rename_error)}")
-        
-        return False
+            print(f"\nUsing Last.fm username: {username}")
 
-def get_video_duration(video_path):
-    """Get the duration of a video in seconds."""
-    try:
-        # Convert to Path object and ensure it's a string for ffmpeg
-        video_path = Path(video_path)
-        video_path_str = str(video_path)
-            
-        print(f"Probing video file: {video_path}")
-        print(f"File exists: {video_path.exists()}")
-        print(f"File size: {video_path.stat().st_size if video_path.exists() else 'N/A'}")
-        probe = ffmpeg.probe(video_path_str)
-        duration = float(probe["format"]["duration"])
-        return duration
-    except ffmpeg.Error as e:
-        print(f"⚠️ FFprobe error: {e}")
-        if hasattr(e, 'stderr') and e.stderr:
-            stderr_text = e.stderr.decode('utf-8', errors='replace') if isinstance(e.stderr, bytes) else str(e.stderr)
-            print(f"FFprobe stderr: {stderr_text}")
-        return None
-    except Exception as e:
-        print(f"⚠️ Unexpected error in get_video_duration: {type(e).__name__}: {str(e)}")
-        print(f"Path type: {type(video_path)}")
-        return None
-
-def prepare_black_screen():
-    """Create a black screen with text and audio for the intro."""
-    # Define file paths using pathlib
-    black_screen_with_text = VIDEO_OUTPUT_DIR / "black_screen_with_text.mp4"
-    black_screen_final = VIDEO_OUTPUT_DIR / "black_screen_final.mp4"
-    
-    # Ensure output directory exists
-    VIDEO_OUTPUT_DIR.mkdir(exist_ok=True)
-    
-    # Check if final black screen already exists
-    if black_screen_final.exists():
-        return black_screen_final
-    
-    # Generate black screen with text overlay
-    if TIME_PERIOD == "month":
-        MONTH_NAME = calendar.month_name[int(TARGET_MONTH)]
-        black_screen_text = f"{LASTFM_USER}'s Top {NUM_SONGS} songs of {MONTH_NAME} {TARGET_YEAR}"
-    elif TIME_PERIOD == "year":
-        black_screen_text = f"{LASTFM_USER}'s Top {NUM_SONGS} songs of {TARGET_YEAR}"
-    else:  # alltime
-        black_screen_text = f"{LASTFM_USER}'s Top {NUM_SONGS} songs of all time"
-    
-    if not black_screen_with_text.exists():
-        print("✏️ Generating black screen with text...")
-        
-        # Determine font path for different operating systems
-        font_path = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"  # Mac path
-        if not os.path.exists(font_path):
-            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"  # Linux fallback
-            if not os.path.exists(font_path):
-                font_path = "C:\\Windows\\Fonts\\arialuni.ttf"  # Windows Unicode font
-                if not os.path.exists(font_path):
-                    font_path = "C:\\Windows\\Fonts\\arial.ttf"  # Windows regular Arial
-                    if not os.path.exists(font_path):
-                        font_path = None  # Let ffmpeg use default font
-        
-        try:
-            # Generate a 3-second black video with text
-            text_filter = {
-                "text": black_screen_text,
-                "fontsize": 50,
-                "fontcolor": "white",
-                "x": "(w-text_w)/2",
-                "y": "(h-text_h)/2"
-            }
-            
-            if font_path:
-                text_filter["fontfile"] = font_path
-                
-            # Create a black video source and add text
-            ffmpeg.input('color=c=black:s=1920x1080:r=30', f='lavfi', t=3).filter(
-                "drawtext", **text_filter
-            ).output(
-                str(black_screen_with_text), 
-                vcodec=SELECTED_CODEC,
-                video_bitrate=VIDEO_BITRATE,
-                vsync="cfr",
-                r=30
-            ).run()
-        except ffmpeg.Error as e:
-            print(f"❌ Error creating black screen: {e}")
-            return None
-    
-    # Add silent audio track to ensure compatibility
-    if not black_screen_final.exists():
-        print("🔇 Adding silent audio track to black screen...")
-        try:
-            # Create two separate inputs
-            video = ffmpeg.input(str(black_screen_with_text))
-            audio = ffmpeg.input('anullsrc=r=44100:cl=stereo', f='lavfi', t=3)
-            
-            # Combine video and audio streams
-            ffmpeg.output(
-                video,
-                audio,
-                str(black_screen_final),
-                vcodec=SELECTED_CODEC,
-                acodec="aac",
-                audio_bitrate=AUDIO_BITRATE,
-                shortest=None
-            ).run()
-        except ffmpeg.Error as e:
-            print(f"❌ Error adding silent audio: {e}")
-            print(f"Detailed error: {str(e)}")
-            # Use version with text as fallback
-            if black_screen_with_text.exists():
-                import shutil
-                shutil.copy(black_screen_with_text, black_screen_final)
-                print("⚠️ Using black screen without audio as fallback")
-    
-    return black_screen_final
-    
-def add_text_overlay(input_clip, output_clip, text):
-    """Add text overlay to video clip with consistent sizing and positioning.
-    
-    Note: Input videos are expected to be standardized to 1920x1080 (16:9) format
-    with original aspect ratios preserved using black bars (letterbox/pillarbox).
-    
-    Args:
-        input_clip: Path to input video (standardized to 1920x1080)
-        output_clip: Path to save output video
-        text: Text to overlay
-    """
-    # Convert Path objects to strings for ffmpeg compatibility
-    input_clip_str = str(input_clip)
-    output_clip_str = str(output_clip)
-    
-    # Get video dimensions using ffprobe
-    try:
-        probe = ffmpeg.probe(input_clip_str)
-        width = int(probe['streams'][0]['width'])
-        height = int(probe['streams'][0]['height'])
-        
-        # Base font size as percentage of video height
-        base_fontsize = int(height * 0.05)  # 5% of video height
-        
-        # Adjust font size based on text length to ensure it fits
-        # Calculate approximate character width (varies by font)
-        char_width_factor = 0.6  # Approximate width of a character relative to font size
-        
-        # Estimate width of text in pixels
-        estimated_text_width = len(text) * base_fontsize * char_width_factor
-        
-        # If estimated width is too large, scale down the font size
-        if estimated_text_width > width * 0.85:  # Allow text to use 85% of width
-            fontsize = int(base_fontsize * (width * 0.85) / estimated_text_width)
-        else:
-            fontsize = base_fontsize
-        
-        # Scale shadow size based on resolution
-        shadowx = max(2, int(width * 0.002))
-        shadowy = max(2, int(height * 0.002))
-        
-        # Calculate position from bottom as percentage of height
-        bottom_margin = int(height * 0.08)  # 8% from bottom
-        y_position = f"h-{bottom_margin}"
-    except Exception as e:
-        print(f"⚠️ Could not determine video dimensions: {e}")
-        # Fallback values
-        fontsize = 36
-        shadowx = 2
-        shadowy = 2
-        y_position = "h-100"
-    
-    # Determine font path for different operating systems
-    font_path = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"  # Mac path
-    if not os.path.exists(font_path):
-        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"  # Linux fallback
-        if not os.path.exists(font_path):
-            font_path = "C:\\Windows\\Fonts\\arialuni.ttf"  # Windows Unicode font
-            if not os.path.exists(font_path):
-                font_path = "C:\\Windows\\Fonts\\arial.ttf"  # Windows regular Arial
-                if not os.path.exists(font_path):
-                    font_path = None  # Let ffmpeg use default font
-    
-    # Text with enhanced shadow for better readability
-    text_params = {
-        'text': text,
-        'fontsize': fontsize,
-        'fontcolor': 'white',
-        'x': '(w-text_w)/2',  # Center horizontally
-        'y': y_position,      # Consistent distance from bottom
-        'shadowcolor': 'black',
-        'shadowx': shadowx,
-        'shadowy': shadowy
-    }
-    
-    if font_path:
-        text_params['fontfile'] = font_path
-    
-    # Apply text filter with shadow
-    ffmpeg.input(input_clip_str).filter(
-        'drawtext', **text_params
-    ).output(
-        output_clip_str, 
-        vcodec=SELECTED_CODEC, 
-        acodec="aac", 
-        audio_bitrate=AUDIO_BITRATE, 
-        video_bitrate=VIDEO_BITRATE,
-        map="0:a", 
-        preset="fast"
-    ).run()
-
-def update_video():
-    """Allow user to replace incorrect videos before final merge."""
-    while True:
-        replace = input("\n❓ Do you need to replace any videos? (yes/no): ").strip().lower()
-        if replace != "yes":
-            break  # Exit if no replacement needed
-
-        # Print numbered list of videos for reference
-        print("\nCurrent videos in compilation:")
-        for i, (artist, title) in enumerate(songs):
-            print(f"  {i+1}. {artist} - {title}")
-        
-        try:
-            user_input = int(input("\nEnter the song number to replace (1-50): "))
-            if user_input < 1 or user_input > len(video_clips):
-                print("❌ Invalid song number. Try again.")
-                continue
-
-            # Fix: Map user input to correct video_clips index
-            # User sees songs in order 1,2,3... but video_clips is in reverse order
-            # User input 1 corresponds to video_clips[len(songs)-1]
-            index = len(songs) - user_input
-            
-            artist, title = songs[user_input - 1]  # Get song info from original position
-            print(f"🔄 Replacing: {artist} - {title}")
-
-            # Ask for a new YouTube URL
-            new_video_url = input("Enter the correct YouTube URL: ").strip()
-            if not new_video_url.startswith("https://www.youtube.com/watch"):
-                print("❌ Invalid YouTube URL")
-                continue
-
-            # Define file paths
-            clip_path = VIDEO_OUTPUT_DIR / f"clip_{index}.mp4"
-            final_clip_path = VIDEO_OUTPUT_DIR / f"final_{index}.mp4"
-
-            # Delete old files to prevent conflicts
-            for file in [clip_path, final_clip_path]:
-                if os.path.exists(file):
-                    os.remove(file)
-
-            try:
-                # Get video metadata
-                with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-                    info = ydl.extract_info(new_video_url, download=False)
-                    duration = info.get('duration')
-                    
-                    # Determine start time
-                    start_time_seconds = sum(int(x) * 60 ** i for i, x in enumerate(reversed(CHORUS_START.split(":"))))
-                    
-                    # Adjust if needed
-                    if duration and start_time_seconds + CLIP_DURATION > duration:
-                        print(f"⚠️ Video too short ({duration}s). Adjusting start time.")
-                        start_time_seconds = max(0, duration - CLIP_DURATION)
-                
-                # Download and extract clip
-                download_video(new_video_url, clip_path, start_time=start_time_seconds, duration=CLIP_DURATION)
-                
-                # Fix: Use correct track number that matches original numbering
-                add_text_overlay(clip_path, final_clip_path, f"{user_input}. {artist} - {title}")
-
-                # Update cached YouTube links
-                query = f"{artist} - {title}"
-                video_cache[query] = new_video_url
-                save_cache(video_cache, "video_cache.json")
-                progress[query] = new_video_url
-                save_cache(progress, "progress.json")
-
-                # Replace the incorrect video in the final list
-                video_clips[index] = final_clip_path
-
-                print(f"✅ Successfully replaced {artist} - {title}!")
-                
-            except Exception as e:
-                print(f"❌ Error replacing video: {e}")
-                print("Please try again.")
-
-        except ValueError:
-            print("❌ Invalid input. Please enter a valid number.")
-
-def merge_videos(video_list, output_file):
-    """Merge all video clips into a single video file."""
-    # Save cache before merging
-    save_cache(video_cache, "video_cache.json")
-    
-    # Prepare the black screen with text and audio
-    black_screen = prepare_black_screen()
-    
-    # Verify the black screen exists
-    if not black_screen.exists():
-        print(f"❌ Fatal error: Black screen {black_screen} not found. Cannot merge videos.")
-        return
-    
-    # Verify all videos exist before merging
-    missing_files = [video for video in video_list if not Path(video).exists()]
-    if missing_files:
-        print(f"❌ Missing files: {missing_files}")
-        return
-    
-    # Create a text file for FFmpeg concat
-    file_list_path = CACHE_DIR / "file_list.txt"
-    CACHE_DIR.mkdir(exist_ok=True)
-    
-    with open(file_list_path, "w") as f:
-        # Add the black screen first
-        f.write(f"file '{black_screen.absolute()}'\n")
-        # Add all the video clips
-        for video in video_list:
-            f.write(f"file '{Path(video).absolute()}'\n")
-    
-    print("✅ All files found, proceeding with FFmpeg merge...")
-    
-    # Platform-specific merge approach
-    if sys.platform == 'win32':
-        # Use the Windows approach that works
-        try:
-            ffmpeg.input(str(file_list_path), format="concat", safe=0).output(
-                str(Path(output_file).absolute()),
-                vcodec=SELECTED_CODEC,
-                acodec="aac",
-                audio_bitrate=AUDIO_BITRATE,
-                video_bitrate=VIDEO_BITRATE,
-                r=30,
-                format="mp4"
-            ).run()
-            print("🎬 Merging Complete! Final video saved at:", output_file)
-        except ffmpeg.Error as e:
-            print(f"❌ Error during merge: {e}")
-    else:
-        # Mac-specific approach - use direct command
-        try:
-            cmd = f'ffmpeg -f concat -safe 0 -i "{file_list_path}" -c:v {SELECTED_CODEC} -crf {VIDEO_CRF} -c:a aac -b:a {AUDIO_BITRATE} -r 30 "{output_file}" -y'
-            print(f"Running command: {cmd}")
-            os.system(cmd)
-            print("🎬 Merging Complete! Final video saved at:", output_file)
-        except Exception as e:
-            print(f"❌ Error during merge: {e}")
-
-if __name__ == "__main__":
-    # Ensure workspace is clean before starting
-    ensure_clean_workspace()
-    
-    songs = get_top_songs()  # Fetches from cache OR API
-    video_clips = []
-
-    # Create appropriate period description for display
-    if TIME_PERIOD == "month":
-        period_description = f"{calendar.month_name[int(TARGET_MONTH)]} {TARGET_YEAR}"
-    elif TIME_PERIOD == "year":
-        period_description = f"{TARGET_YEAR}"
-    else:  # alltime
-        period_description = "all time"
-
-    print(f"\n🎵 Processing your top {NUM_SONGS} songs for {period_description}...")
-    sys.stdout.flush()
-    
-    for i, song_data in enumerate(reversed(songs)):
-        artist, title = song_data
-        print(f"\n🎵 Processing {i+1}/{NUM_SONGS}: {artist} - {title}")
-        sys.stdout.flush()
-        query = f"{artist} {title}"
-        video_url = search_youtube_video(artist, title)
-        if not video_url:
-            print(f"❌ Skipping {artist} - {title}: No YouTube video found")
-            sys.stdout.flush()
-            continue
-        
-        # Define file paths - we now only need two files per song
-        clip_path = VIDEO_OUTPUT_DIR / f"clip_{i}.mp4"
-        final_clip_path = VIDEO_OUTPUT_DIR / f"final_{i}.mp4"
-        
-        try:
-            # Get video metadata first to determine optimal start time
-            with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-                info = ydl.extract_info(video_url, download=False)
-                duration = info.get('duration')
-                
-                # Convert CHORUS_START to seconds
-                start_time_seconds = sum(int(x) * 60 ** i for i, x in enumerate(reversed(CHORUS_START.split(":"))))
-                
-                # Adjust start time if video is too short
-                if duration and start_time_seconds + CLIP_DURATION > duration:
-                    print(f"⚠️ Video too short ({duration}s). Adjusting start time.")
-                    start_time_seconds = max(0, duration - CLIP_DURATION)
-            
-            # Download only the segment we need directly
-            download_success = download_video(video_url, clip_path, start_time=start_time_seconds, duration=CLIP_DURATION)
-            
-            if not download_success or not clip_path.exists() or clip_path.stat().st_size == 0:
-                print(f"❌ Download failed for {artist} - {title}: File not created or empty")
-                continue
-            
-            # Add text overlay
-            print(f"📝 Adding text overlay for {artist} - {title}")
-            add_text_overlay(clip_path, final_clip_path, f"{len(songs)-i}. {artist} - {title}")
-            
-            # Verify final clip was created successfully
-            if final_clip_path.exists() and final_clip_path.stat().st_size > 0:
-                video_clips.append(final_clip_path)
-                print(f"✅ Successfully processed {artist} - {title}")
-            else:
-                print(f"❌ Text overlay failed for {artist} - {title}: Final clip not created")
-                continue
-            
-        except Exception as e:
-            print(f"❌ Error processing {artist} - {title}: {e}")
-            continue
-
-    # Merge the initial version of the final video
-    if video_clips:
-        merge_videos(video_clips, FINAL_VIDEO)
-
-        print("\n🎬 Initial Video Created Successfully!")
-        print("📌 Please review the final video and confirm if any clips need replacement.")
-        
-        # Track if replacements happen
-        need_replacement = False
-
-        # Allow user to manually replace videos after watching
+        # Get number of songs
         while True:
             try:
-                choice = input("❓ Do you need to replace any videos? (yes/no): ").strip().lower()
-                if choice == "yes":
-                    need_replacement = True  # Mark that replacements happened
-                    update_video()
-                elif choice == "no":
-                    break
+                num_songs_input = input(f"\nNumber of songs (default: {self.config.max_songs}): ").strip()
+                if not num_songs_input:
+                    num_songs = self.config.max_songs
                 else:
-                    print("❌ Invalid input. Please enter 'yes' or 'no'.")
-            except EOFError:
-                # Handle case where input stream is closed (e.g., when called from Electron)
-                print("✅ No replacement requested (input stream closed).")
+                    num_songs = int(num_songs_input)
+                    if num_songs <= 0:
+                        print("❌ Number of songs must be positive!")
+                        continue
                 break
-            except KeyboardInterrupt:
-                # Handle Ctrl+C gracefully
-                print("\n⚠️ Process interrupted by user.")
-                break
+            except ValueError:
+                print("❌ Please enter a valid number!")
         
-        # Merge Final Video Again only if replacements were made
-        if need_replacement:
-            print("🔄 Merging the final version after replacements...")
-            merge_videos(video_clips, FINAL_VIDEO)
-            print(f"✨ Final video saved as: {FINAL_VIDEO}")
-        else:
-            print(f"✨ Video compilation complete! Saved as: {FINAL_VIDEO}")
-    else:
-        print("❌ No videos were successfully processed. Cannot create compilation.")
+        # Get time period
+        print(f"\nSelect time period:")
+        print("1. Monthly (specific month/year)")
+        print("2. Yearly (entire year)")
+        print("3. All-time (overall top songs)")
+        
+        period_map = {
+            '1': 'month',
+            '2': 'year',
+            '3': 'alltime'
+        }
+        
+        while True:
+            choice = input(f"\nChoose time period (1-3, default: 3): ").strip()
+            if not choice:
+                choice = '3'
+            
+            if choice in period_map:
+                period = period_map[choice]
+                break
+            else:
+                print("❌ Please enter a number between 1 and 3!")
+        
+        # Get specific year/month if needed
+        target_year = None
+        target_month = None
+        
+        if period in ['month', 'year']:
+            while True:
+                try:
+                    year_input = input(f"\nEnter year (e.g., 2024): ").strip()
+                    target_year = int(year_input)
+                    if target_year < 2000 or target_year > 2030:
+                        print("❌ Please enter a year between 2000 and 2030!")
+                        continue
+                    break
+                except ValueError:
+                    print("❌ Please enter a valid year!")
+        
+        if period == 'month':
+            print(f"\nSelect month:")
+            months = [
+                "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December"
+            ]
+            for i, month in enumerate(months, 1):
+                print(f"{i:2d}. {month}")
+            
+            while True:
+                try:
+                    month_input = input(f"\nChoose month (1-12): ").strip()
+                    target_month = int(month_input)
+                    if target_month < 1 or target_month > 12:
+                        print("❌ Please enter a number between 1 and 12!")
+                        continue
+                    break
+                except ValueError:
+                    print("❌ Please enter a valid month number!")
+        
+        # Get enable URL replacement option
+        while True:
+            enable_replacement = input("\nEnable manual URL replacement if videos are missing? (y/N): ").strip().lower()
+            if enable_replacement in ['', 'n', 'no']:
+                enable_replacement = False
+                break
+            elif enable_replacement in ['y', 'yes']:
+                enable_replacement = True
+                break
+            else:
+                print("❌ Please enter 'y' for yes or 'n' for no")
 
-    # Delete progress.json after successful completion
-    progress_path = CACHE_DIR / "progress.json"
-    if progress_path.exists():
-        progress_path.unlink()
-        print("✅ Temporary progress file cleaned up.")
-    
-    # Delete requirements.txt after successful completion
-    file_list = CACHE_DIR / "file_list.txt"
-    if file_list.exists():
-        file_list.unlink()
-    
-    # Only clean up video folder if explicitly requested and final video is confirmed
-    if VIDEO_OUTPUT_DIR.exists() and VIDEO_OUTPUT_DIR.is_dir():
-        final_video_path = Path(FINAL_VIDEO)
-        # Only proceed with cleanup if final video exists and is not empty
-        if final_video_path.exists() and final_video_path.stat().st_size > 0:
-            try:
-                # Give ffmpeg processes time to complete
-                import time
-                time.sleep(2)
-                
-                print("🧹 Final video created successfully. Cleaning up temporary files...")
-                
-                # Move the final video to the current directory if it's in the video folder
-                if final_video_path.parent == VIDEO_OUTPUT_DIR.absolute():
-                    import shutil
-                    final_name = final_video_path.name
-                    current_dir_path = Path.cwd() / final_name
-                    
-                    # Make sure we don't overwrite an existing file
-                    counter = 1
-                    while current_dir_path.exists():
-                        name_parts = final_name.rsplit('.', 1)
-                        if len(name_parts) == 2:
-                            current_dir_path = Path.cwd() / f"{name_parts[0]}_{counter}.{name_parts[1]}"
-                        else:
-                            current_dir_path = Path.cwd() / f"{final_name}_{counter}"
-                        counter += 1
-                    
-                    shutil.copy(FINAL_VIDEO, current_dir_path)
-                    print(f"✅ Copied final video to current directory: {current_dir_path}")
-                
-                # Clean up individual clip files only (not the whole directory immediately)
-                clip_files = list(VIDEO_OUTPUT_DIR.glob("clip_*.mp4")) + list(VIDEO_OUTPUT_DIR.glob("final_*.mp4"))
-                for clip_file in clip_files:
-                    try:
-                        clip_file.unlink()
-                        print(f"✅ Removed temporary clip: {clip_file.name}")
-                    except Exception as e:
-                        print(f"⚠️ Could not remove {clip_file.name}: {e}")
-                
-                # Only remove the directory if it's empty or nearly empty
-                remaining_files = list(VIDEO_OUTPUT_DIR.iterdir())
-                if len(remaining_files) <= 2:  # Allow for hidden files like .DS_Store
-                    try:
-                        import shutil
-                        shutil.rmtree(VIDEO_OUTPUT_DIR)
-                        print("✅ Temporary video folder cleaned up.")
-                    except Exception as e:
-                        print(f"⚠️ Could not remove video folder: {e}")
-                
-            except Exception as e:
-                print(f"⚠️ Error during cleanup: {e}. Temporary files preserved for troubleshooting.")
+        # Get output format
+        print("\n📋 Choose output format:")
+        print("1. Vertical (1080x1920) - Instagram/TikTok")
+        print("2. Horizontal (1920x1080) - YouTube")
+        
+        while True:
+            format_choice = input("\nEnter choice (1-2): ").strip()
+            if format_choice == "1":
+                output_format = "vertical"
+                break
+            elif format_choice == "2":
+                output_format = "horizontal"
+                break
+            else:
+                print("❌ Please enter 1 or 2")
+
+        print(f"\n✅ Configuration:")
+        print(f"   Username: {username}")
+        print(f"   Songs: {num_songs}")
+        if period == 'month':
+            month_name = ["January", "February", "March", "April", "May", "June",
+                         "July", "August", "September", "October", "November", "December"][target_month - 1]
+            print(f"   Period: {month_name} {target_year}")
+        elif period == 'year':
+            print(f"   Period: {target_year}")
         else:
-            print("⚠️ Final video not found or empty. Keeping temporary files for troubleshooting.")
+            print(f"   Period: All-time")
+        print()
+        
+        return username, num_songs, period, target_year, target_month, output_format, enable_replacement
+    
+    def create_compilation(self, username: str, num_songs: int, period: str, 
+                          target_year: Optional[int] = None, target_month: Optional[int] = None, 
+                          enable_replacement: bool = False) -> Optional[str]:
+        """
+        Create a video compilation for the specified user and parameters.
+    
+    Args:
+            username: Last.fm username
+            num_songs: Number of top songs to include
+            period: Time period for top songs ('month', 'year', 'alltime')
+            target_year: Target year (required for 'month' and 'year')
+            target_month: Target month (required for 'month')
+        
+    Returns:
+            Optional[str]: Path to created video file, or None if failed
+        """
+        logger.info(f"Starting compilation creation for user {username}")
+        
+        try:
+            # Step 1: Initialize APIs
+            lastfm_api_key = os.getenv('LASTFM_API_KEY')
+            youtube_api_key = os.getenv('YOUTUBE_API_KEY')
+            
+            if not self.song_service.initialize_lastfm_client(lastfm_api_key):
+                print("❌ Failed to initialize Last.fm API")
+                return None
+                
+            if not self.search_service.initialize_youtube_client(youtube_api_key):
+                print("❌ Failed to initialize YouTube API")
+                return None
+            
+            # Step 2: Fetch top songs from Last.fm
+            print("🎵 Fetching top songs from Last.fm...")
+            
+            # Set default values for alltime
+            if period == 'alltime':
+                api_target_year = 2024  # Default year for alltime
+                api_target_month = None
+            else:
+                api_target_year = target_year
+                api_target_month = target_month
+            
+            songs = self.song_service.get_top_songs(
+                username=username,
+                time_period=period, 
+                target_year=api_target_year,
+                target_month=api_target_month,
+                num_songs=num_songs
+            )
+            
+            if not songs:
+                print("❌ No songs found for the specified criteria")
+                logger.error(f"No songs found for user {username}")
+                return None
+            
+            print(f"✅ Found {len(songs)} top songs")
+            for i, (artist, title) in enumerate(songs, 1):
+                print(f"   {i}. {artist} - {title}")
+            
+            # Step 3: Search for YouTube videos
+            print("\n🔍 Searching for YouTube videos...")
+            video_urls = []
+            
+            for i, (artist, title) in enumerate(songs):
+                cache_key = f"youtube:{artist}:{title}"
+                cached_url = self.cache_service.get_cached_video_url(cache_key)
+                
+                if cached_url:
+                    video_urls.append(cached_url)
+                    print(f"   ✅ Cached: {artist} - {title}")
+                else:
+                    url = self.search_service.search_youtube_video(artist, title)
+                    if url:
+                        video_urls.append(url)
+                        self.cache_service.cache_video_url(cache_key, url)
+                        print(f"   ✅ Found: {artist} - {title}")
+                    else:
+                        print(f"   ❌ Not found: {artist} - {title}")
+                        
+                        # Manual URL replacement if enabled
+                        if enable_replacement:
+                            while True:
+                                manual_url = input(f"      💭 Enter YouTube URL for '{artist} - {title}' (or press Enter to skip): ").strip()
+                                if not manual_url:
+                                    # Skip this song - will create black screen placeholder
+                                    video_urls.append(None)
+                                    print(f"      ⏭️ Skipped: {artist} - {title}")
+                                    break
+                                elif 'youtube.com/watch?v=' in manual_url or 'youtu.be/' in manual_url:
+                                    video_urls.append(manual_url)
+                                    self.cache_service.cache_video_url(cache_key, manual_url)
+                                    print(f"      ✅ Manual URL added: {artist} - {title}")
+                                    break
+                                else:
+                                    print("      ❌ Invalid YouTube URL format. Please try again.")
+                        else:
+                            # No replacement enabled - create placeholder
+                            video_urls.append(None)
+            
+            print(f"\n✅ Found {len([url for url in video_urls if url])} YouTube videos")
+            if None in video_urls:
+                missing_count = video_urls.count(None)
+                print(f"⚠️  {missing_count} song(s) will have 'Video not found' placeholder")
+            
+            # Step 4: Create video compilation
+            print("\n🎬 Creating video compilation...")
+            
+            # Convert song tuples to dictionaries for compilation service
+            # Include all songs, even those without videos
+            song_dicts = [{'artist': artist, 'title': title} for artist, title in songs]
+            
+            output_file = self.compilation_service.create_compilation(
+                video_urls, 
+                song_dicts,
+                username,
+                period,
+                target_year,
+                target_month
+            )
+            
+            if output_file and os.path.exists(output_file):
+                print(f"\n🎉 Compilation created successfully!")
+                print(f"📁 Output file: {output_file}")
+                logger.info(f"Compilation created successfully: {output_file}")
+                
+                # Post-generation video replacement
+                self._offer_video_replacement(songs, video_urls, output_file, enable_replacement)
+                
+                return output_file
+            else:
+                print("❌ Failed to create compilation")
+                logger.error("Compilation creation failed")
+                return None
+            
+        except Exception as e:
+            logger.error(f"Error creating compilation: {e}", exc_info=True)
+            print(f"❌ Error creating compilation: {e}")
+        return None
+
+    def _offer_video_replacement(self, songs: List[Tuple[str, str]], video_urls: List[Optional[str]], output_path: str, enable_replacement: bool):
+        """Offer post-generation video replacement."""
+        if not enable_replacement:
+            return
+            
+        while True:
+            print("\n🤔 Do you want to replace any videos in the compilation?")
+            choice = input("Enter 'y' for yes, 'n' for no: ").strip().lower()
+            
+            if choice in ['n', 'no', '']:
+                print("✅ No replacements made")
+                break
+            elif choice in ['y', 'yes']:
+                self._interactive_video_replacement(songs, video_urls, output_path)
+                break
+            else:
+                print("❌ Please enter 'y' for yes or 'n' for no")
+
+    def _interactive_video_replacement(self, songs: List[Tuple[str, str]], video_urls: List[Optional[str]], output_path: str):
+        """Handle interactive video replacement."""
+        print("\n📺 Current videos in compilation:")
+        for i, (song, url) in enumerate(zip(songs, video_urls), 1):
+            artist, title = song
+            status = "✅ Has video" if url else "❌ No video (placeholder)"
+            print(f"   {i}. {artist} - {title} - {status}")
+        
+        while True:
+            try:
+                choice = input(f"\nEnter song number to replace (1-{len(songs)}) or 'done' to finish: ").strip().lower()
+                
+                if choice in ['done', 'exit', 'quit', '']:
+                    break
+                
+                song_num = int(choice)
+                if 1 <= song_num <= len(songs):
+                    self._replace_single_video(songs, video_urls, song_num - 1, output_path)
+                else:
+                    print(f"❌ Please enter a number between 1 and {len(songs)}")
+                    
+            except ValueError:
+                print("❌ Please enter a valid number or 'done'")
+
+    def _replace_single_video(self, songs: List[Tuple[str, str]], video_urls: List[Optional[str]], index: int, output_path: str):
+        """Replace a single video with manual URL input."""
+        artist, title = songs[index]
+        current_url = video_urls[index]
+        
+        print(f"\n🎵 Replacing: {artist} - {title}")
+        if current_url:
+            print(f"   Current URL: {current_url}")
+        else:
+            print("   Current: No video (placeholder)")
+        
+        while True:
+            new_url = input("   Enter new YouTube URL (or press Enter to cancel): ").strip()
+            
+            if not new_url:
+                print("   ⏭️ Replacement cancelled")
+                break
+                
+            if 'youtube.com/watch?v=' in new_url or 'youtu.be/' in new_url:
+                # Update the URL
+                video_urls[index] = new_url
+                
+                # Cache the new URL
+                cache_key = f"youtube:{artist}:{title}"
+                self.cache_service.cache_video_url(cache_key, new_url)
+                
+                print(f"   ✅ URL updated for: {artist} - {title}")
+                
+                # Ask if they want to regenerate the compilation
+                regenerate = input("   🔄 Regenerate compilation now? (y/N): ").strip().lower()
+                if regenerate in ['y', 'yes']:
+                    self._regenerate_compilation(songs, video_urls, output_path)
+                break
+            else:
+                print("   ❌ Invalid YouTube URL format. Please try again.")
+
+    def _regenerate_compilation(self, songs: List[Tuple[str, str]], video_urls: List[Optional[str]], output_path: str):
+        """Regenerate the compilation with updated video URLs."""
+        print("\n🔄 Regenerating compilation with updated videos...")
+        
+        # Delete the old compilation file
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        
+        # Convert song tuples to dictionaries
+        song_dicts = [{'artist': artist, 'title': title} for artist, title in songs]
+        
+        # Create new compilation
+        try:
+            # Extract parameters from the original path
+            # This is a simplified approach - in practice you'd want to store these
+            username = "user"  # Could extract from filename
+            period = "month"   # Could extract from filename
+            
+            new_output = self.compilation_service.create_compilation(
+                video_urls, 
+                song_dicts,
+                username,
+                period
+            )
+            
+            if new_output and os.path.exists(new_output):
+                print(f"✅ Compilation regenerated: {new_output}")
+            else:
+                print("❌ Failed to regenerate compilation")
+                
+        except Exception as e:
+            print(f"❌ Error regenerating compilation: {e}")
+
+    def run(self):
+        """Main application entry point."""
+        logger.info("Starting video.fm application")
+        
+        try:
+            # Validate environment
+            if not self.validate_environment():
+                sys.exit(1)
+            
+            # Get user input
+            username, num_songs, period, target_year, target_month, output_format, enable_replacement = self.get_user_input()
+            
+            # Create compilation
+            output_file = self.create_compilation(username, num_songs, period, target_year, target_month, enable_replacement)
+            
+            if output_file:
+                print(f"\n🎉 Success! Your video compilation is ready:")
+                print(f"📁 {output_file}")
+                
+                # Optional: Open the video file
+                if sys.platform == "darwin":  # macOS
+                    os.system(f"open '{output_file}'")
+                elif sys.platform == "linux":
+                    os.system(f"xdg-open '{output_file}'")
+                elif sys.platform == "win32":
+                    os.system(f"start '{output_file}'")
+            else:
+                print("\n❌ Failed to create video compilation")
+                sys.exit(1)
+                
+        except KeyboardInterrupt:
+            print("\n\n👋 Goodbye!")
+            logger.info("Application terminated by user")
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}", exc_info=True)
+            print(f"\n❌ Unexpected error: {e}")
+            sys.exit(1)
+
+
+def main():
+    """Application entry point."""
+    app = VideoFMApp()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
