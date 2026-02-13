@@ -9,10 +9,10 @@ This module handles all FFmpeg video processing operations including:
 """
 
 import os
-import sys
 import calendar
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+import subprocess
 import ffmpeg
 
 from config import VideoConfig
@@ -107,9 +107,11 @@ class VideoProcessor:
                 if font_path:
                     text_filter["fontfile"] = font_path
                     
-                # Create a black video source and add text
+                # Create a black video source and add text (force square pixels / SAR=1)
                 ffmpeg.input('color=c=black:s=1920x1080:r=30', f='lavfi', t=3).filter(
                     "drawtext", **text_filter
+                ).filter(
+                    "setsar", "1"
                 ).output(
                     str(black_screen_with_text), 
                     vcodec=self.config.selected_codec,
@@ -127,7 +129,8 @@ class VideoProcessor:
             try:
                 # Create two separate inputs
                 video = ffmpeg.input(str(black_screen_with_text))
-                audio = ffmpeg.input('anullsrc=r=44100:cl=stereo', f='lavfi', t=3)
+                # Match the rest of the pipeline (48kHz stereo) to keep concat happy
+                audio = ffmpeg.input('anullsrc=r=48000:cl=stereo', f='lavfi', t=3)
                 
                 # Combine video and audio streams
                 ffmpeg.output(
@@ -214,23 +217,43 @@ class VideoProcessor:
             # Apply text filter with audio copying
             input_video = ffmpeg.input(input_clip_str)
             
-            # Apply text overlay to video stream
-            video_with_text = input_video.video.filter('drawtext', **text_params)
+            # Apply text overlay to video stream and normalize SAR so concat filter won't fail
+            video_with_text = input_video.video.filter('drawtext', **text_params).filter('setsar', '1')
             
             # Copy audio stream unchanged
             audio_stream = input_video.audio
             
-            # Output with both video and audio
+            # Output with both video and audio (codec-specific settings)
+            out_kwargs = {
+                "vcodec": self.config.selected_codec,
+                "r": 30,          # Force 30fps
+                "vsync": "cfr",   # Constant frame rate
+                "map_metadata": "-1",
+                "preset": self.config.ffmpeg_preset,
+            }
+            # Always standardize audio to AAC 48kHz stereo so large concat runs
+            # can use the concat demuxer reliably (uniform stream parameters).
+            out_kwargs.update({
+                "acodec": "aac",
+                **{"b:a": "192k"},
+                "ar": 48000,
+                "ac": 2,
+            })
+            if "videotoolbox" in self.config.selected_codec:
+                out_kwargs.update({
+                    **{"b:v": self.config.video_bitrate},
+                    "pix_fmt": "yuv420p",
+                })
+            else:
+                out_kwargs.update({
+                    "crf": self.config.video_crf,
+                })
+
             ffmpeg.output(
                 video_with_text,
                 audio_stream,
                 output_clip_str, 
-                vcodec=self.config.selected_codec,
-                acodec="copy",  # Copy audio without re-encoding
-                r=30,  # Force 30fps to match download format
-                vsync='cfr',  # Constant frame rate
-                map_metadata="-1",  # Remove metadata to avoid conflicts
-                preset="fast"
+                **out_kwargs
             ).run(overwrite_output=True)
             return True
         except ffmpeg.Error as e:
@@ -264,42 +287,55 @@ class VideoProcessor:
             if missing_files:
                 print(f"   ❌ Missing files: {missing_files}")
                 return False
-            
-            # Create file list for concat demuxer
-            file_list_path = self.config.cache_dir / "file_list.txt"
-            self.config.cache_dir.mkdir(exist_ok=True)
-            
-            with open(file_list_path, "w") as f:
-                for video in all_videos:
-                    # Use absolute paths to avoid issues
-                    abs_path = Path(video).resolve()
-                    f.write(f"file '{abs_path}'\n")
-            
-            print(f"   📝 Created file list with {len(all_videos)} videos")
-            
-            # Use concat demuxer for standardized format videos
-            # Since all videos are now standardized to same format, concat should work perfectly
-            ffmpeg.input(
-                str(file_list_path), 
-                format="concat", 
-                safe=0
-            ).output(
-                str(output_file),
-                vcodec=self.config.selected_codec,
-                acodec="aac",
-                **{"b:a": "192k"},  # Proper audio bitrate syntax
-                r=30,  # Force 30fps to match standardized format
-                vsync="cfr",  # Constant frame rate
-                map_metadata="-1",  # Remove metadata
-                preset="fast"
-            ).run(overwrite_output=True)
+
+            # For large N (e.g. 200 clips), the concat *filter* approach creates one input per file
+            # and can exceed OS thread limits (pthread_create fails). Use concat *demuxer* instead:
+            # it processes files sequentially and scales to hundreds/thousands of segments.
+            concat_list_path = output_file.with_suffix(".concat.txt")
+            with open(concat_list_path, "w", encoding="utf-8") as f:
+                for p in all_videos:
+                    # Our filenames are sanitized elsewhere; keep quoting simple for spaces.
+                    f.write(f"file '{Path(p).resolve()}'\n")
+
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", str(concat_list_path),
+                "-map_metadata", "-1",
+                "-r", "30",
+                "-vsync", "cfr",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-ar", "48000",
+                "-ac", "2",
+            ]
+
+            if "videotoolbox" in self.config.selected_codec:
+                cmd += ["-c:v", self.config.selected_codec, "-b:v", str(self.config.video_bitrate)]
+            else:
+                cmd += [
+                    "-c:v", self.config.selected_codec,
+                    "-crf", str(self.config.video_crf),
+                    "-preset", str(self.config.ffmpeg_preset),
+                ]
+
+            cmd += [str(output_file)]
+
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            try:
+                concat_list_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+            if result.returncode != 0:
+                stderr = (result.stderr or "").strip()
+                print(f"   ❌ Error during merge: {stderr[-2000:] if stderr else 'Unknown ffmpeg error'}")
+                return False
             
             print(f"   ✅ Merge completed: {output_file}")
-            
-            # Clean up file list
-            if file_list_path.exists():
-                file_list_path.unlink()
-            
             return True
             
         except ffmpeg.Error as e:

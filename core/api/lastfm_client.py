@@ -13,7 +13,7 @@ import time
 import datetime
 import requests
 from collections import Counter
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 
 # Import utility functions
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -22,6 +22,8 @@ from core.utils.cache import load_cache, save_cache
 
 class LastFmClient:
     """Client for interacting with Last.fm API."""
+
+    API_BASE_URL = "https://ws.audioscrobbler.com/2.0/"
     
     def __init__(self, api_key: str):
         """Initialize the Last.fm client.
@@ -31,6 +33,14 @@ class LastFmClient:
         """
         self.api_key = api_key
         self.cache_file = "lastfm_cache.json"
+        self._session = requests.Session()
+        # Some endpoints/providers get picky without a User-Agent; include one.
+        self._session.headers.update(
+            {
+                "User-Agent": "video.fm/1.0 (+https://github.com/; contact: local)",
+                "Accept": "application/json",
+            }
+        )
         
     def get_top_songs(self, username: str, time_period: str, target_year: int, 
                      target_month: Optional[int] = None, num_songs: int = 10) -> List[Tuple[str, str]]:
@@ -137,24 +147,52 @@ class LastFmClient:
         while not found_earliest:
             print(f"📥 Fetching page {page} from Last.fm...")
             sys.stdout.flush()  # Force output to be sent immediately
-
-            url = f"http://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&user={username}&api_key={self.api_key}&format=json&limit=1000&page={page}"
             
             try:
-                response = requests.get(url)
+                params = {
+                    "method": "user.getrecenttracks",
+                    "user": username,
+                    "api_key": self.api_key,
+                    "format": "json",
+                    "limit": 1000,
+                    "page": page,
+                }
+
+                response = self._session.get(self.API_BASE_URL, params=params, timeout=20)
+
+                # Handle rate limiting explicitly so we can retry a few times.
+                if response.status_code == 429:
+                    retry_after = response.headers.get("Retry-After")
+                    sleep_s = 2.0
+                    if retry_after:
+                        try:
+                            sleep_s = max(1.0, float(retry_after))
+                        except ValueError:
+                            pass
+                    print(f"⏳ Last.fm rate limited (429). Sleeping {sleep_s:.1f}s then retrying…")
+                    time.sleep(sleep_s)
+                    continue
+
+                # Raise for other HTTP errors, but provide a helpful message for 403/401.
+                if response.status_code in (401, 403):
+                    raise RuntimeError(
+                        "Last.fm API request was forbidden. "
+                        "This is usually an invalid/disabled API key, or a blocked/non-HTTPS request."
+                    )
+
                 response.raise_for_status()
-                data = response.json()
+
+                data: Dict[str, Any] = response.json()
 
                 # Check for API errors
                 if "error" in data:
-                    print(f"❌ Last.fm API error: {data['message']}")
-                    sys.exit(1)
+                    # Example: {"error":6,"message":"Invalid parameters","links":[]}
+                    message = data.get("message") or "Unknown Last.fm API error"
+                    raise RuntimeError(f"Last.fm API error: {message}")
 
                 # Validate response structure
                 if 'recenttracks' not in data or 'track' not in data['recenttracks']:
-                    print("❌ Error: Invalid API response. The expected data structure is missing.")
-                    print("Response:", data)
-                    break
+                    raise RuntimeError("Invalid Last.fm API response (missing recenttracks.track)")
 
                 tracks = data["recenttracks"]["track"]
                 if not tracks:
@@ -192,9 +230,9 @@ class LastFmClient:
                 if found_earliest:
                     break
 
-            except requests.exceptions.RequestException as e:
-                print(f"❌ Error fetching data: {e}")
-                break
+            except (requests.exceptions.RequestException, ValueError) as e:
+                # ValueError can happen from response.json() on invalid payloads.
+                raise RuntimeError(f"Error fetching data from Last.fm: {e}") from e
 
             page += 1
             time.sleep(0.5)  # Prevent API rate-limiting

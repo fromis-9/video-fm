@@ -15,6 +15,10 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, List
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 # Core configuration and services
 from config import VideoConfig
 from services.song_service import SongService

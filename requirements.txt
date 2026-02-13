@@ -1,7 +1,12 @@
 requests>=2.32.3
 yt-dlp>=2025.5.22
+yt-dlp-ejs>=0.4.0
+curl_cffi>=0.13.0
 ffmpeg-python>=0.2.0
 python-dotenv>=1.1.0
 google-api-python-client>=2.170.0
 tqdm>=4.67.1
 ffmpeg_downloader>=0.4.0
+# Chorus detection
+librosa>=0.10.0
+numpy>=1.24.0

@@ -10,8 +10,9 @@ import sys
 import subprocess
 import datetime
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Dict, Any
 import yt_dlp
+from yt_dlp.utils import DownloadError
 from tqdm import tqdm
 
 from config import VideoConfig
@@ -84,12 +85,27 @@ class VideoDownloader:
             
             # Write batch file contents for downloading - with hidden window execution
             with open(batch_file, "w") as f:
-                f.write(f'@echo off\n')
-                f.write(f'echo Downloading with yt-dlp...\n')
-                f.write(f'yt-dlp "{video_url}" -o "{tmp_download_path}" --format mp4\n')
+                f.write('@echo off\n')
+                f.write('echo Downloading with yt-dlp...\n')
+                # Prefer HTTPS progressive formats and an alternate YouTube client to reduce 403s.
+                # Note: -o expects an output template; we pass a concrete filename intentionally.
+                ua = os.getenv(
+                    "YTDLP_USER_AGENT",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                )
+                f.write(
+                    f'yt-dlp "{video_url}" '
+                    f'--no-playlist --retries 3 --fragment-retries 3 '
+                    f'--user-agent "{ua}" '
+                    f'--extractor-args "youtube:player_client=android" '
+                    f'-f "bestvideo[protocol^=https]+bestaudio[protocol^=https]/best[protocol^=https]" '
+                    f'--merge-output-format mp4 '
+                    f'-o "{tmp_download_path}"\n'
+                )
             
             # Execute batch file with hidden window
-            print(f"Executing hidden batch file for download")
+            print("Executing hidden batch file for download")
             
             # Use startupinfo to hide the console window
             startupinfo = subprocess.STARTUPINFO()
@@ -102,7 +118,7 @@ class VideoDownloader:
             # Clean up batch file
             try:
                 batch_file.unlink()
-            except:
+            except Exception:
                 pass
             
             # Check if download succeeded, then proceed with normal processing
@@ -149,7 +165,7 @@ class VideoDownloader:
         # Clean up downloaded file
         try:
             tmp_download_path.unlink()
-        except:
+        except Exception:
             pass
         
         return output_path.exists()
@@ -157,7 +173,12 @@ class VideoDownloader:
     def _download_unix(self, video_url: str, output_path: Path, 
                       start_time: Optional[str | int], 
                       duration: Optional[int]) -> bool:
-        """Unix/Linux/macOS download implementation."""
+        """Unix/Linux/macOS download implementation.
+        
+        Uses a two-step approach for clip extraction:
+        1. Download full video with yt-dlp (handles bestvideo+bestaudio merging)
+        2. Extract clip with ffmpeg (handles time-based extraction + format standardization)
+        """
         
         # Ensure all path and URL arguments are strings, not bytes
         if isinstance(video_url, bytes):
@@ -170,78 +191,292 @@ class VideoDownloader:
 
         def progress_hook(d):
             """Update progress bar during download."""
-            if d['status'] == 'downloading' and 'downloaded_bytes' in d and 'total_bytes' in d:
-                percentage = (d['downloaded_bytes'] / d['total_bytes']) * 100
-                progress_bar.n = percentage
-                progress_bar.refresh()
-            elif d['status'] == 'finished':
-                progress_bar.n = 100
-                progress_bar.close()
+            try:
+                if d.get('status') == 'downloading':
+                    downloaded = d.get('downloaded_bytes') or 0
+                    total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+                    if total:
+                        percentage = (downloaded / total) * 100
+                        progress_bar.n = percentage
+                        progress_bar.refresh()
+                elif d.get('status') == 'finished':
+                    progress_bar.n = 100
+                    progress_bar.close()
+            except Exception:
+                # Never let progress UI break downloads
+                pass
         
-        # Use yt-dlp with external downloader for direct clip extraction + format standardization
-        ydl_opts = {
-            'format': self._get_format_selector(),
-            'outtmpl': str(output_path),
-            'progress_hooks': [progress_hook],
-            'quiet': True,
-            'no_warnings': True,
-            'ignoreerrors': True,
-            'noplaylist': True,
-            'nocheckcertificate': True,
-            'prefer_insecure': True,
-            'socket_timeout': 15
-        }
+        # Determine if we need clip extraction
+        need_clip_extraction = start_time is not None and duration is not None
         
-        # Add clip extraction and format standardization if parameters provided
-        if start_time is not None and duration is not None:
-            ydl_opts['external_downloader'] = 'ffmpeg'
-            ydl_opts['external_downloader_args'] = [
-                '-ss', str(start_time),
-                '-t', str(duration),
-                # CRITICAL: Standardize format to prevent sync issues
-                '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black',
-                '-r', '30',  # Force 30fps
-                '-c:v', self.config.selected_codec,
-                '-c:a', 'aac',
-                '-b:a', '192k',
-                '-vsync', 'cfr'  # Constant frame rate
-            ]
+        # Use temp file for full download if we need to extract a clip
+        if need_clip_extraction:
+            temp_download_path = output_path.with_suffix('.temp.mp4')
+        else:
+            temp_download_path = output_path
+        
+        def build_ydl_opts(*, extractor_args: Optional[dict] = None, fmt: Optional[str] = None) -> dict:
+            """Build yt-dlp options with sane defaults and optional YouTube tweaks."""
+            ua = os.getenv(
+                "YTDLP_USER_AGENT",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            )
+            cookiefile = os.getenv("YTDLP_COOKIEFILE") or os.getenv("YTDLP_COOKIES")
+            proxy = os.getenv("YTDLP_PROXY")
+
+            opts: dict = {
+                'format': fmt or self._get_format_selector(),
+                'outtmpl': str(temp_download_path),
+                'progress_hooks': [progress_hook],
+                'quiet': True,
+                'no_warnings': True,
+                # For single-URL downloads, don't hide failures (we rely on exceptions to retry)
+                'ignoreerrors': False,
+                # Put yt-dlp cache under our configurable cache dir (so you can move it to an external SSD)
+                'cachedir': str((self.config.cache_dir / "yt-dlp").resolve()),
+                'noplaylist': True,
+                'socket_timeout': 30,
+                'retries': 3,
+                'fragment_retries': 3,
+                'merge_output_format': 'mp4',  # Ensure output is mp4 with merged streams
+                'http_headers': {
+                    'User-Agent': ua,
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Referer': 'https://www.youtube.com/',
+                },
+            }
+
+            if extractor_args:
+                opts['extractor_args'] = extractor_args
+            if cookiefile:
+                opts['cookiefile'] = cookiefile
+            if proxy:
+                opts['proxy'] = proxy
+
+            return opts
         
         try:
-            # Download the video (with clip extraction if parameters provided)
             print(f"Starting download for URL: {video_url}")
             print(f"Output path: {output_path}")
-            if start_time is not None and duration is not None:
+            if need_clip_extraction:
                 print(f"Extracting {duration}s clip starting at {start_time}s with format standardization")
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([video_url])
-                
-            # Check if download/extraction succeeded
-            if output_path.exists() and output_path.stat().st_size > 0:
-                print(f"✅ Download successful: {output_path} ({output_path.stat().st_size} bytes)")
-                return True
-            else:
-                print(f"❌ Download failed: File not found or empty at {output_path}")
+
+            # YouTube can intermittently block certain clients/requests with HTTP 403.
+            # Retry with alternative "player clients" and, as a last resort, avoid HLS/DASH manifests.
+            attempts: list[tuple[str, dict, Optional[str]]] = [
+                ("default", {}, None),
+                ("android player client", {"youtube": {"player_client": ["android"]}}, None),
+                (
+                    "android client + skip dash/hls",
+                    {"youtube": {"player_client": ["android"], "skip": ["dash", "hls"]}},
+                    # Prefer plain HTTPS formats when skipping manifests
+                    "bestvideo[protocol^=https]+bestaudio[protocol^=https]/best[protocol^=https]",
+                ),
+            ]
+
+            last_err: Optional[BaseException] = None
+            for idx, (label, extractor_args, fmt) in enumerate(attempts, start=1):
+                try:
+                    if idx > 1:
+                        print(f"🔁 Retrying download with {label}…")
+                    with yt_dlp.YoutubeDL(build_ydl_opts(extractor_args=extractor_args or None, fmt=fmt)) as ydl:
+                        ydl.download([video_url])
+                    last_err = None
+                    break
+                except DownloadError as e:
+                    last_err = e
+                    # Try next attempt
+                    continue
+                except Exception as e:
+                    last_err = e
+                    continue
+
+            if last_err is not None:
+                raise last_err
+
+            # Check if download succeeded
+            if not temp_download_path.exists() or temp_download_path.stat().st_size == 0:
+                print(f"❌ Download failed: File not found or empty at {temp_download_path}")
                 return False
+
+            # Validate that the downloaded file has a video stream
+            if not self._has_video_stream(temp_download_path):
+                print("⚠️ Downloaded file has no video stream (audio-only)")
+                # Clean up and return False
+                try:
+                    temp_download_path.unlink()
+                except Exception:
+                    pass
+                return False
+
+            # Step 2: If clip extraction needed, use ffmpeg to extract and standardize
+            if need_clip_extraction:
+                success = self._extract_clip_ffmpeg(temp_download_path, output_path, start_time, duration)
+
+                # Clean up temp file
+                try:
+                    temp_download_path.unlink()
+                except Exception:
+                    pass
+
+                if success:
+                    print(f"✅ Download successful: {output_path} ({output_path.stat().st_size} bytes)")
+                return success
+
+            print(f"✅ Download successful: {output_path} ({output_path.stat().st_size} bytes)")
+            return True
             
         except Exception as e:
             print(f"❌ Error during video processing: {type(e).__name__}: {str(e)}")
+            # Clean up temp file on error
+            if need_clip_extraction and temp_download_path.exists():
+                try:
+                    temp_download_path.unlink()
+                except Exception:
+                    pass
+            return False
+        finally:
+            try:
+                if progress_bar and hasattr(progress_bar, "close"):
+                    progress_bar.close()
+            except Exception:
+                pass
+    
+    def _has_video_stream(self, file_path: Path) -> bool:
+        """Check if a media file has a video stream using ffprobe.
+        
+        Args:
+            file_path: Path to the media file
+            
+        Returns:
+            bool: True if file has a video stream, False otherwise
+        """
+        try:
+            result = subprocess.run(
+                [
+                    'ffprobe',
+                    '-v', 'quiet',
+                    '-select_streams', 'v:0',  # Select first video stream
+                    '-show_entries', 'stream=codec_type',
+                    '-of', 'csv=p=0',
+                    str(file_path)
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            # If there's a video stream, ffprobe outputs "video"
+            return 'video' in result.stdout.strip()
+        except Exception:
+            # If ffprobe fails, assume no video (safer)
+            return False
+    
+    def _extract_clip_ffmpeg(self, input_path: Path, output_path: Path,
+                             start_time: str | int, duration: int) -> bool:
+        """Extract a clip from a video using ffmpeg with format standardization.
+        
+        Args:
+            input_path: Path to the input video file
+            output_path: Path to save the extracted clip
+            start_time: Start time in seconds or HH:MM:SS format
+            duration: Duration of clip in seconds
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        # Convert start_time to seconds if it's in HH:MM:SS format
+        if isinstance(start_time, str) and ":" in start_time:
+            parts = start_time.split(":")
+            if len(parts) == 3:
+                h, m, s = map(int, parts)
+                start_seconds = h * 3600 + m * 60 + s
+            else:
+                start_seconds = int(start_time)
+        else:
+            start_seconds = int(start_time)
+        
+        # Build ffmpeg command for clip extraction with format standardization.
+        # Important: Avoid audio "time-stretch" filters (which can pitch-shift).
+        # Instead, enforce CFR video via fps filter and reset timestamps on both streams.
+        # IMPORTANT: Do all trimming in the filtergraph so audio+video are *exactly* `duration`
+        # and start at PTS 0. This prevents segment-to-segment drift and "video freezes while audio continues".
+        vf = (
+            "scale=1920:1080:force_original_aspect_ratio=decrease,"
+            "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,"
+            "setsar=1,"
+            "fps=30,"
+            f"trim=duration={duration},"
+            "setpts=PTS-STARTPTS"
+        )
+        af = f"aresample=48000,atrim=duration={duration},asetpts=PTS-STARTPTS"
+
+        cmd = [
+            'ffmpeg',
+            '-y',  # Overwrite output
+            '-ss', str(start_seconds),  # Seek before input (faster)
+            '-i', str(input_path),
+            # Hard limit processing duration as well (prevents long-running encodes on some sources)
+            '-t', str(duration),
+            '-filter_complex', f"[0:v]{vf}[v];[0:a]{af}[a]",
+            '-map', '[v]',
+            '-map', '[a]',
+            '-c:v', self.config.selected_codec,
+            '-crf', str(self.config.video_crf),
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-ar', '48000',
+            '-ac', '2',
+            '-shortest',
+            str(output_path)
+        ]
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # Some sources decode/encode slower; avoid false timeouts
+            )
+            
+            if result.returncode != 0:
+                print(f"❌ FFmpeg error: {result.stderr[:500] if result.stderr else 'Unknown error'}")
+                return False
+            
+            return output_path.exists() and output_path.stat().st_size > 0
+            
+        except subprocess.TimeoutExpired:
+            print("❌ FFmpeg timed out")
+            return False
+        except Exception as e:
+            print(f"❌ Error during clip extraction: {type(e).__name__}: {str(e)}")
             return False
     
     def _get_format_selector(self) -> str:
-        """Get the appropriate format selector based on MAX_VIDEO_QUALITY setting."""
-        quality_map = {
-            "480": "best[height<=480]",
-            "720": "best[height<=720]", 
-            "1080": "best[height<=1080]",
-            "1440": "best[height<=1440]",
-            "2160": "best[height<=2160]"
-        }
+        """Get the appropriate format selector based on MAX_VIDEO_QUALITY setting.
         
-        base_format = quality_map.get(self.config.max_video_quality, "best[height<=1080]")
-        # Add robust fallbacks for YouTube signature issues
-        return f"{base_format}/best[height<=720]/best/worst"
+        Uses a fallback chain to maximize compatibility while ensuring video is included.
+        The _has_video_stream check will catch any audio-only downloads.
+        """
+        max_height = self.config.max_video_quality or "1080"
+        
+        # Build a comprehensive fallback chain:
+        # 1. Best video+audio at max quality
+        # 2. Best video+audio at lower qualities  
+        # 3. Any combined format with video
+        # 4. Best available (caught by _has_video_stream if audio-only)
+        format_chain = [
+            f"bestvideo[height<={max_height}][protocol^=https]+bestaudio[protocol^=https]",
+            "bestvideo[height<=1080][protocol^=https]+bestaudio[protocol^=https]",
+            "bestvideo[height<=720][protocol^=https]+bestaudio[protocol^=https]",
+            "bestvideo[protocol^=https]+bestaudio[protocol^=https]",
+            f"best[height<={max_height}][protocol^=https]",
+            "best[height<=1080][protocol^=https]",
+            "best[height<=720][protocol^=https]",
+            "best"
+        ]
+        
+        return "/".join(format_chain)
     
     def get_video_info(self, video_url: str) -> Optional[Dict[str, Any]]:
         """Get video information without downloading."""

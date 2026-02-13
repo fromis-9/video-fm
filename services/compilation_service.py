@@ -14,6 +14,7 @@ import subprocess
 from config import VideoConfig
 from downloader import VideoDownloader
 from processor import VideoProcessor
+from services.chorus_detector import ChorusDetector
 import ffmpeg
 
 
@@ -29,6 +30,10 @@ class CompilationService:
         self.config = config
         self.downloader = VideoDownloader(config)
         self.processor = VideoProcessor(config)
+        self.chorus_detector = ChorusDetector(
+            clip_duration=config.clip_duration,
+            cache_dir=config.cache_dir,
+        )
         
         # Ensure output directory exists
         self.config.video_output_dir.mkdir(parents=True, exist_ok=True)
@@ -157,9 +162,9 @@ class CompilationService:
             clip_filename = self._clean_filename(clip_filename)
             clip_path = self.clips_dir / clip_filename
             
-            # Download video with clip extraction
-            # Use 15-second clips starting at 60 seconds (chorus)
-            start_time = 60  # seconds
+            # Detect the best chorus section for this video
+            print(f"   🔍 Detecting chorus for {song['artist']} - {song['title']}...")
+            start_time = self.chorus_detector.detect_chorus_timestamp(video_url)
             duration = self.config.clip_duration  # Should be 15 seconds
             
             print(f"   🎵 Extracting {duration}s clip starting at {start_time}s")
@@ -302,7 +307,8 @@ class CompilationService:
                 
             # Create a standardized black video (1920x1080@30fps, 3 seconds) with text and audio
             video_input = ffmpeg.input('color=c=black:s=1920x1080:r=30', f='lavfi', t=3)
-            audio_input = ffmpeg.input('anullsrc=r=44100:cl=stereo', f='lavfi', t=3)
+            # Keep audio parameters consistent with the rest of the pipeline (48kHz stereo)
+            audio_input = ffmpeg.input('anullsrc=r=48000:cl=stereo', f='lavfi', t=3)
             
             # Apply text overlay to video
             video_with_text = video_input.filter("drawtext", **text_filter)
@@ -417,7 +423,7 @@ class CompilationService:
             cmd = [
                 'ffmpeg', '-y',
                 '-f', 'lavfi', '-i', 'color=c=black:s=1920x1080:r=30',  # Black video
-                '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',       # Silent audio
+                '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',       # Silent audio (match pipeline)
                 '-t', '15',  # 15 second duration
                 '-filter_complex', f"""
                 [0:v]drawtext=text='Video not found':
