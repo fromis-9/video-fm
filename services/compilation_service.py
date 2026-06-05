@@ -41,7 +41,7 @@ class CompilationService:
         # Clips directory is the same as video output directory
         self.clips_dir = self.config.video_output_dir
     
-    def create_compilation(self, video_urls: List[str], songs: List[Dict[str, str]], 
+    def create_compilation(self, video_urls: List[Optional[str]], songs: List[Dict[str, str]], 
                           username: str, period: str, target_year: Optional[int] = None, 
                           target_month: Optional[int] = None) -> Optional[str]:
         """Create a video compilation from YouTube URLs and song metadata.
@@ -75,25 +75,34 @@ class CompilationService:
             # Countdown videos show: 5th, 4th, 3rd, 2nd, 1st (building to #1)
             countdown_pairs = list(reversed(paired_songs_videos))
             
-            clip_paths = []
-            final_clip_paths = []
+            # Keep these lists aligned 1:1 with countdown_pairs. If any song is skipped,
+            # every caption after it shifts onto the wrong video.
+            clip_paths: List[Path] = []
+            final_clip_paths: List[Path] = []
             
             # Step 1: Download and extract clips (or create placeholders)
             for i, (song, video_url) in enumerate(countdown_pairs):
                 print(f"\n📥 Processing {i+1}/{len(countdown_pairs)}: {song['artist']} - {song['title']}")
                 
-                if video_url is None:
-                    # Create black screen placeholder for missing video
-                    clip_path = self._create_placeholder_clip(song, i)
-                else:
+                clip_path: Optional[Path] = None
+                if video_url is not None:
                     # Download actual video clip
                     clip_path = self._process_video_clip(video_url, song, i)
+                    if not (clip_path and clip_path.exists()):
+                        print(f"⚠️  Video processing failed; using placeholder instead")
+                
+                if clip_path is None or not clip_path.exists():
+                    # Create black screen placeholder for missing video or failed processing
+                    clip_path = self._create_placeholder_clip(song, i)
                 
                 if clip_path and clip_path.exists():
                     clip_paths.append(clip_path)
-                    print(f"✅ Clip {i+1} processed successfully")
+                    print(f"✅ Clip {i+1} ready")
                 else:
-                    print(f"❌ Failed to process clip {i+1}")
+                    # Do not continue with a missing slot. Continuing would misalign every
+                    # later video/caption pair.
+                    print(f"❌ Failed to create clip or placeholder for {i+1}; aborting compilation")
+                    return None
             
             if not clip_paths:
                 print("❌ No clips were successfully processed")
@@ -103,12 +112,16 @@ class CompilationService:
             
             # Step 2: Add text overlays to clips
             countdown_songs = [song for song, _ in countdown_pairs]
-            for i, (clip_path, song) in enumerate(zip(clip_paths, countdown_songs[:len(clip_paths)])):
+            for i, song in enumerate(countdown_songs):
+                clip_path = clip_paths[i]
                 print(f"\n✏️ Adding text overlay {i+1}/{len(clip_paths)}: {song['artist']} - {song['title']}")
                 
                 final_clip_path = self._add_text_overlay(clip_path, song, i, len(countdown_songs))
                 if final_clip_path and final_clip_path.exists():
                     final_clip_paths.append(final_clip_path)
+                else:
+                    print("   ⚠️  Text overlay failed; using clip without overlay")
+                    final_clip_paths.append(clip_path)
             
             if not final_clip_paths:
                 print("❌ No final clips were created")
@@ -131,7 +144,7 @@ class CompilationService:
                 'target_month': target_month
             }
             
-            success = self._merge_clips(final_clip_paths, output_path, countdown_songs[:len(final_clip_paths)], user_settings)
+            success = self._merge_clips(final_clip_paths, output_path, countdown_songs, user_settings)
             
             if success and output_path.exists():
                 print(f"✅ Compilation created successfully!")
@@ -418,16 +431,18 @@ class CompilationService:
             
             print(f"   🖤 Creating placeholder for missing video")
             
-            # Create 15-second black screen with only "Video not found" text
+            # Create black screen with only "Video not found" text
             # The text overlay step will add the song info with countdown number
+            font_path = self._get_system_font_path()
+            fontfile_arg = f"fontfile={font_path}:" if font_path else ""
             cmd = [
                 'ffmpeg', '-y',
                 '-f', 'lavfi', '-i', 'color=c=black:s=1920x1080:r=30',  # Black video
                 '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',       # Silent audio (match pipeline)
-                '-t', '15',  # 15 second duration
+                '-t', str(self.config.clip_duration),
                 '-filter_complex', f"""
                 [0:v]drawtext=text='Video not found':
-                fontfile=/System/Library/Fonts/Arial.ttf:
+                {fontfile_arg}
                 fontsize=60:
                 fontcolor=white:
                 x=(w-text_w)/2:

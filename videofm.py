@@ -105,12 +105,13 @@ class VideoFMApp:
         logger.info("Environment validation successful")
         return True
     
-    def get_user_input(self) -> Tuple[str, int, str, Optional[int], Optional[int]]:
+    def get_user_input(self) -> Tuple[str, int, str, Optional[int], Optional[int], str, bool]:
         """
         Get user input for compilation parameters.
         
         Returns:
-            Tuple[str, int, str, Optional[int], Optional[int]]: username, number of songs, time period, target_year, target_month
+            Tuple[str, int, str, Optional[int], Optional[int], str, bool]:
+                username, number of songs, time period, target_year, target_month, output_format, enable_replacement
         """
         print("\n🎵 Welcome to video.fm - Video Compilation Creator")
         print("=" * 50)
@@ -367,7 +368,16 @@ class VideoFMApp:
                 logger.info(f"Compilation created successfully: {output_file}")
                 
                 # Post-generation video replacement
-                self._offer_video_replacement(songs, video_urls, output_file, enable_replacement)
+                output_file = self._offer_video_replacement(
+                    songs,
+                    video_urls,
+                    output_file,
+                    enable_replacement,
+                    username=username,
+                    period=period,
+                    target_year=target_year,
+                    target_month=target_month,
+                )
                 
                 return output_file
             else:
@@ -380,10 +390,24 @@ class VideoFMApp:
             print(f"❌ Error creating compilation: {e}")
         return None
 
-    def _offer_video_replacement(self, songs: List[Tuple[str, str]], video_urls: List[Optional[str]], output_path: str, enable_replacement: bool):
-        """Offer post-generation video replacement."""
+    def _offer_video_replacement(
+        self,
+        songs: List[Tuple[str, str]],
+        video_urls: List[Optional[str]],
+        output_path: str,
+        enable_replacement: bool,
+        *,
+        username: str,
+        period: str,
+        target_year: Optional[int],
+        target_month: Optional[int],
+    ) -> str:
+        """Offer post-generation video replacement.
+
+        Returns the final output path (may change if compilation is regenerated).
+        """
         if not enable_replacement:
-            return
+            return output_path
             
         while True:
             print("\n🤔 Do you want to replace any videos in the compilation?")
@@ -391,39 +415,89 @@ class VideoFMApp:
             
             if choice in ['n', 'no', '']:
                 print("✅ No replacements made")
-                break
+                return output_path
             elif choice in ['y', 'yes']:
-                self._interactive_video_replacement(songs, video_urls, output_path)
-                break
+                new_output_path = self._interactive_video_replacement(
+                    songs,
+                    video_urls,
+                    output_path,
+                    username=username,
+                    period=period,
+                    target_year=target_year,
+                    target_month=target_month,
+                )
+                return new_output_path
             else:
                 print("❌ Please enter 'y' for yes or 'n' for no")
+        
+        return output_path
 
-    def _interactive_video_replacement(self, songs: List[Tuple[str, str]], video_urls: List[Optional[str]], output_path: str):
-        """Handle interactive video replacement."""
+    def _interactive_video_replacement(
+        self,
+        songs: List[Tuple[str, str]],
+        video_urls: List[Optional[str]],
+        output_path: str,
+        *,
+        username: str,
+        period: str,
+        target_year: Optional[int],
+        target_month: Optional[int],
+    ) -> str:
+        """Handle interactive video replacement.
+
+        Returns the final output path (may change if compilation is regenerated).
+        """
         print("\n📺 Current videos in compilation:")
         for i, (song, url) in enumerate(zip(songs, video_urls), 1):
             artist, title = song
             status = "✅ Has video" if url else "❌ No video (placeholder)"
             print(f"   {i}. {artist} - {title} - {status}")
         
+        current_output_path = output_path
         while True:
             try:
                 choice = input(f"\nEnter song number to replace (1-{len(songs)}) or 'done' to finish: ").strip().lower()
                 
                 if choice in ['done', 'exit', 'quit', '']:
-                    break
+                    return current_output_path
                 
                 song_num = int(choice)
                 if 1 <= song_num <= len(songs):
-                    self._replace_single_video(songs, video_urls, song_num - 1, output_path)
+                    maybe_new_output = self._replace_single_video(
+                        songs,
+                        video_urls,
+                        song_num - 1,
+                        current_output_path,
+                        username=username,
+                        period=period,
+                        target_year=target_year,
+                        target_month=target_month,
+                    )
+                    current_output_path = maybe_new_output
                 else:
                     print(f"❌ Please enter a number between 1 and {len(songs)}")
                     
             except ValueError:
                 print("❌ Please enter a valid number or 'done'")
 
-    def _replace_single_video(self, songs: List[Tuple[str, str]], video_urls: List[Optional[str]], index: int, output_path: str):
-        """Replace a single video with manual URL input."""
+        return current_output_path
+
+    def _replace_single_video(
+        self,
+        songs: List[Tuple[str, str]],
+        video_urls: List[Optional[str]],
+        index: int,
+        output_path: str,
+        *,
+        username: str,
+        period: str,
+        target_year: Optional[int],
+        target_month: Optional[int],
+    ) -> str:
+        """Replace a single video with manual URL input.
+
+        Returns the (possibly updated) output path.
+        """
         artist, title = songs[index]
         current_url = video_urls[index]
         
@@ -453,43 +527,70 @@ class VideoFMApp:
                 # Ask if they want to regenerate the compilation
                 regenerate = input("   🔄 Regenerate compilation now? (y/N): ").strip().lower()
                 if regenerate in ['y', 'yes']:
-                    self._regenerate_compilation(songs, video_urls, output_path)
-                break
+                    new_output = self._regenerate_compilation(
+                        songs,
+                        video_urls,
+                        output_path,
+                        username=username,
+                        period=period,
+                        target_year=target_year,
+                        target_month=target_month,
+                    )
+                    return new_output or output_path
+                return output_path
             else:
                 print("   ❌ Invalid YouTube URL format. Please try again.")
 
-    def _regenerate_compilation(self, songs: List[Tuple[str, str]], video_urls: List[Optional[str]], output_path: str):
-        """Regenerate the compilation with updated video URLs."""
+        return output_path
+
+    def _regenerate_compilation(
+        self,
+        songs: List[Tuple[str, str]],
+        video_urls: List[Optional[str]],
+        output_path: str,
+        *,
+        username: str,
+        period: str,
+        target_year: Optional[int],
+        target_month: Optional[int],
+    ) -> Optional[str]:
+        """Regenerate the compilation with updated video URLs.
+
+        Returns the new output path if regeneration succeeds, else None.
+        """
         print("\n🔄 Regenerating compilation with updated videos...")
-        
-        # Delete the old compilation file
-        if os.path.exists(output_path):
-            os.remove(output_path)
+        old_output_path = output_path
         
         # Convert song tuples to dictionaries
         song_dicts = [{'artist': artist, 'title': title} for artist, title in songs]
         
         # Create new compilation
         try:
-            # Extract parameters from the original path
-            # This is a simplified approach - in practice you'd want to store these
-            username = "user"  # Could extract from filename
-            period = "month"   # Could extract from filename
-            
             new_output = self.compilation_service.create_compilation(
                 video_urls, 
                 song_dicts,
                 username,
-                period
+                period,
+                target_year,
+                target_month,
             )
             
             if new_output and os.path.exists(new_output):
                 print(f"✅ Compilation regenerated: {new_output}")
+                # Only remove old output after new one exists.
+                if old_output_path and os.path.exists(old_output_path) and old_output_path != new_output:
+                    try:
+                        os.remove(old_output_path)
+                    except OSError:
+                        pass
+                return new_output
             else:
                 print("❌ Failed to regenerate compilation")
+                return None
                 
         except Exception as e:
             print(f"❌ Error regenerating compilation: {e}")
+            return None
 
     def run(self):
         """Main application entry point."""
